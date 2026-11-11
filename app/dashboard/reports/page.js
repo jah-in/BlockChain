@@ -10,49 +10,133 @@ import {
   Warehouse,
 } from "lucide-react";
 
-import {
-  getData,
-  subscribeToData,
-} from "@/lib/relieftrack-store";
-
 export default function ReportsPage() {
   const [inventory, setInventory] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [distributions, setDistributions] = useState([]);
+
   const [reportType, setReportType] = useState("inventory");
   const [searchTerm, setSearchTerm] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   /* ============================================================
-     LOAD SHARED RELIEFTRACK DATA
+     LOAD REDIS-BACKED RELIEFTRACK DATA
   ============================================================ */
 
   useEffect(() => {
-    function loadData() {
-      const data = getData();
+    let cancelled = false;
 
-      setInventory(
-        Array.isArray(data.inventory) ? data.inventory : []
-      );
+    async function loadData() {
+      try {
+        setLoading(true);
+        setError("");
 
-      setWarehouses(
-        Array.isArray(data.warehouses) ? data.warehouses : []
-      );
+        const [
+          warehousesResponse,
+          inventoryResponse,
+          distributionsResponse,
+        ] = await Promise.all([
+          fetch("/api/warehouses", {
+            cache: "no-store",
+          }),
+          fetch("/api/inventory", {
+            cache: "no-store",
+          }),
+          fetch("/api/distributions", {
+            cache: "no-store",
+          }),
+        ]);
 
-      setDistributions(
-        Array.isArray(data.distributions)
-          ? data.distributions
-          : []
-      );
+        const warehousesData =
+          await warehousesResponse.json();
+
+        const inventoryData =
+          await inventoryResponse.json();
+
+        const distributionsData =
+          await distributionsResponse.json();
+
+        if (
+          !warehousesResponse.ok ||
+          !warehousesData.success
+        ) {
+          throw new Error(
+            warehousesData.message ||
+              "Failed to load warehouses."
+          );
+        }
+
+        if (
+          !inventoryResponse.ok ||
+          !inventoryData.success
+        ) {
+          throw new Error(
+            inventoryData.message ||
+              "Failed to load inventory."
+          );
+        }
+
+        if (
+          !distributionsResponse.ok ||
+          !distributionsData.success
+        ) {
+          throw new Error(
+            distributionsData.message ||
+              "Failed to load distributions."
+          );
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        setWarehouses(
+          Array.isArray(warehousesData.warehouses)
+            ? warehousesData.warehouses
+            : []
+        );
+
+        setInventory(
+          Array.isArray(inventoryData.inventory)
+            ? inventoryData.inventory
+            : []
+        );
+
+        setDistributions(
+          Array.isArray(
+            distributionsData.distributions
+          )
+            ? distributionsData.distributions
+            : []
+        );
+      } catch (error) {
+        console.error(
+          "Failed to load report data:",
+          error
+        );
+
+        if (!cancelled) {
+          setError(
+            error?.message ||
+              "Unable to load report data."
+          );
+
+          setInventory([]);
+          setWarehouses([]);
+          setDistributions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
     }
 
     loadData();
 
-    const unsubscribe = subscribeToData(loadData);
-
     return () => {
-      if (typeof unsubscribe === "function") {
-        unsubscribe();
-      }
+      cancelled = true;
     };
   }, []);
 
@@ -109,6 +193,7 @@ export default function ReportsPage() {
       }
 
       const quantity = Number(item.quantity || 0);
+
       const weightKgPerUnit = Number(
         item.weightKgPerUnit || 0
       );
@@ -120,7 +205,10 @@ export default function ReportsPage() {
         return total;
       }
 
-      return total + quantity * weightKgPerUnit;
+      return (
+        total +
+        quantity * weightKgPerUnit
+      );
     }, 0);
   }
 
@@ -138,7 +226,9 @@ export default function ReportsPage() {
       return 0;
     }
 
-    return quantity * weightKgPerUnit;
+    return (
+      quantity * weightKgPerUnit
+    );
   }
 
   /* ============================================================
@@ -172,16 +262,14 @@ export default function ReportsPage() {
   const totalUsedCapacity = useMemo(() => {
     return warehouses.reduce(
       (sum, warehouse) =>
-        sum + getWarehouseLoad(warehouse.id),
+        sum +
+        getWarehouseLoad(warehouse.id),
       0
     );
   }, [inventory, warehouses]);
 
   /* ============================================================
      TOTAL AVAILABLE CAPACITY
-
-     If a warehouse is over capacity, available capacity
-     is displayed as 0 instead of a negative number.
   ============================================================ */
 
   const totalAvailableCapacity = useMemo(() => {
@@ -225,26 +313,6 @@ export default function ReportsPage() {
   }, [inventory, warehouses]);
 
   /* ============================================================
-     DELIVERED WEIGHT
-  ============================================================ */
-
-  const deliveredWeight = useMemo(() => {
-    return distributions
-      .filter(
-        (distribution) =>
-          distribution.status === "Delivered"
-      )
-      .reduce(
-        (sum, distribution) =>
-          sum +
-          Number(
-            distribution.storageWeightKg || 0
-          ),
-        0
-      );
-  }, [distributions]);
-
-  /* ============================================================
      REPORT ROWS
   ============================================================ */
 
@@ -261,20 +329,25 @@ export default function ReportsPage() {
           getInventoryWeight(item);
 
         const warehouseName =
-          getWarehouseName(item.warehouseId);
+          getWarehouseName(
+            item.warehouseId
+          );
 
-        const warehouse = warehouses.find(
-          (warehouseItem) =>
-            String(warehouseItem.id) ===
-            String(item.warehouseId)
-        );
+        const warehouse =
+          warehouses.find(
+            (warehouseItem) =>
+              String(warehouseItem.id) ===
+              String(item.warehouseId)
+          );
 
         const warehouseLoad = warehouse
           ? getWarehouseLoad(warehouse.id)
           : 0;
 
         const warehouseCapacity = warehouse
-          ? Number(warehouse.capacity || 0)
+          ? Number(
+              warehouse.capacity || 0
+            )
           : 0;
 
         let status = "Available";
@@ -329,83 +402,92 @@ export default function ReportsPage() {
        WAREHOUSE REPORT
     ---------------------------------------------------------- */
 
-    else if (reportType === "warehouses") {
-      rows = warehouses.map((warehouse) => {
-        const capacity = Number(
-          warehouse.capacity || 0
-        );
-
-        const load = getWarehouseLoad(
-          warehouse.id
-        );
-
-        const available = Math.max(
-          0,
-          capacity - load
-        );
-
-        const overBy = Math.max(
-          0,
-          load - capacity
-        );
-
-        const utilization =
-          capacity > 0
-            ? (load / capacity) * 100
-            : 0;
-
-        let capacityStatus =
-          "Within Capacity";
-
-        if (overBy > 0) {
-          capacityStatus =
-            "Over Capacity";
-        } else if (utilization >= 90) {
-          capacityStatus =
-            "Near Capacity";
-        }
-
-        const warehouseInventory =
-          inventory.filter(
-            (item) =>
-              String(item.warehouseId) ===
-              String(warehouse.id)
+    else if (
+      reportType === "warehouses"
+    ) {
+      rows = warehouses.map(
+        (warehouse) => {
+          const capacity = Number(
+            warehouse.capacity || 0
           );
 
-        return {
-          "Warehouse Name":
-            warehouse.name || "Unnamed Warehouse",
+          const load =
+            getWarehouseLoad(
+              warehouse.id
+            );
 
-          Location:
-            warehouse.location || "—",
+          const available = Math.max(
+            0,
+            capacity - load
+          );
 
-          Capacity:
-            formatKg(capacity),
+          const overBy = Math.max(
+            0,
+            load - capacity
+          );
 
-          "Current Load":
-            formatKg(load),
+          const utilization =
+            capacity > 0
+              ? (load / capacity) * 100
+              : 0;
 
-          "Available Capacity":
-            formatKg(available),
+          let capacityStatus =
+            "Within Capacity";
 
-          Utilization:
-            `${utilization.toFixed(1)}%`,
+          if (overBy > 0) {
+            capacityStatus =
+              "Over Capacity";
+          } else if (
+            utilization >= 90
+          ) {
+            capacityStatus =
+              "Near Capacity";
+          }
 
-          "Inventory Records":
-            warehouseInventory.length,
+          const warehouseInventory =
+            inventory.filter(
+              (item) =>
+                String(item.warehouseId) ===
+                String(warehouse.id)
+            );
 
-          Status:
-            warehouse.status || "Active",
+          return {
+            "Warehouse Name":
+              warehouse.name ||
+              "Unnamed Warehouse",
 
-          "Capacity Status":
-            capacityStatus,
+            Location:
+              warehouse.location || "—",
 
-          "Over By":
-            overBy > 0
-              ? formatKg(overBy)
-              : "—",
-        };
-      });
+            Capacity:
+              formatKg(capacity),
+
+            "Current Load":
+              formatKg(load),
+
+            "Available Capacity":
+              formatKg(available),
+
+            Utilization:
+              `${utilization.toFixed(1)}%`,
+
+            "Inventory Records":
+              warehouseInventory.length,
+
+            Status:
+              warehouse.status ||
+              "Active",
+
+            "Capacity Status":
+              capacityStatus,
+
+            "Over By":
+              overBy > 0
+                ? formatKg(overBy)
+                : "—",
+          };
+        }
+      );
     }
 
     /* ----------------------------------------------------------
@@ -426,10 +508,12 @@ export default function ReportsPage() {
             ),
 
           Destination:
-            distribution.destination || "—",
+            distribution.destination ||
+            "—",
 
           Recipient:
-            distribution.recipient || "—",
+            distribution.recipient ||
+            "—",
 
           Item:
             distribution.itemName ??
@@ -444,14 +528,22 @@ export default function ReportsPage() {
 
           "Distribution Weight":
             formatKg(
-              distribution.storageWeightKg
+              distribution.weightKg ??
+                distribution.storageWeightKg ??
+                0
             ),
 
           Date:
             distribution.date || "—",
 
           Status:
-            distribution.status || "Pending",
+            distribution.status ||
+            "Pending",
+
+          Blockchain:
+            distribution.blockchainVerified
+              ? "Verified"
+              : "Not Recorded",
         })
       );
     }
@@ -595,559 +687,639 @@ export default function ReportsPage() {
           </p>
         </header>
 
-        {/* PROTOTYPE NOTICE */}
+        {/* DATA SOURCE NOTICE */}
 
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 transition-colors dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-          <strong className="text-amber-900 dark:text-amber-300">
-            Prototype report:
+        <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800 transition-colors dark:border-green-800 dark:bg-green-950/30 dark:text-green-200">
+          <strong className="text-green-900 dark:text-green-300">
+            Live report data:
           </strong>{" "}
-          These reports are generated from the
-          ReliefTrack browser store. They are not
-          yet database-backed or blockchain-verified.
+          Reports are generated from the current
+          ReliefTrack Redis-backed inventory, warehouse,
+          and distribution records.
         </div>
 
-        {/* SUMMARY CARDS */}
+        {/* ERROR */}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-
-          <SummaryCard
-            title="Inventory Records"
-            value={inventory.length}
-            icon={Package}
-          />
-
-          <SummaryCard
-            title="Stored Relief Goods"
-            value={formatKg(
-              totalInventoryWeight
-            )}
-            icon={Package}
-          />
-
-          <SummaryCard
-            title="Warehouse Capacity"
-            value={formatKg(
-              totalWarehouseCapacity
-            )}
-            icon={Warehouse}
-          />
-
-          <SummaryCard
-            title="Used Capacity"
-            value={formatKg(
-              totalUsedCapacity
-            )}
-            icon={Warehouse}
-          />
-
-          <SummaryCard
-            title="Available Capacity"
-            value={formatKg(
-              totalAvailableCapacity
-            )}
-            icon={Warehouse}
-          />
-
-        </section>
-
-        {/* CAPACITY WARNING */}
-
-        {overCapacityWarehouses.length >
-          0 && (
+        {error && (
           <div className="rounded-xl border border-red-300 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/30">
             <div className="flex items-start gap-3">
-
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
 
               <div>
                 <h2 className="font-semibold text-red-900 dark:text-red-300">
-                  Warehouse Capacity Exceeded
+                  Unable to load report data
                 </h2>
 
-                <p className="mt-1 text-sm leading-6 text-red-800 dark:text-red-200">
-                  {overCapacityWarehouses.length}{" "}
-                  warehouse
-                  {overCapacityWarehouses.length >
-                  1
-                    ? "s are"
-                    : " is"}{" "}
-                  currently over the configured
-                  storage capacity.
-
-                  {" "}
-
-                  New inventory additions should
-                  remain blocked until enough stock
-                  is distributed or removed.
+                <p className="mt-1 text-sm text-red-800 dark:text-red-200">
+                  {error}
                 </p>
               </div>
             </div>
           </div>
         )}
 
-        {/* REPORT CONTROLS */}
+        {/* LOADING */}
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+        {loading ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900">
+            <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600 dark:border-slate-700 dark:border-t-blue-400" />
 
-          <div className="grid gap-4 md:grid-cols-[1fr_2fr_auto] md:items-end">
-
-            {/* REPORT TYPE */}
-
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700 dark:text-slate-200">
-                Report Type
-              </span>
-
-              <select
-                value={reportType}
-                onChange={(event) => {
-                  setReportType(
-                    event.target.value
-                  );
-
-                  setSearchTerm("");
-                }}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-slate-900 outline-none transition-colors focus:border-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:border-blue-400"
-              >
-                <option value="inventory">
-                  Inventory Report
-                </option>
-
-                <option value="warehouses">
-                  Warehouse Capacity Report
-                </option>
-
-                <option value="distributions">
-                  Distribution Report
-                </option>
-              </select>
-            </label>
-
-            {/* SEARCH */}
-
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700 dark:text-slate-200">
-                Search Report
-              </span>
-
-              <input
-                type="search"
-                value={searchTerm}
-                onChange={(event) =>
-                  setSearchTerm(
-                    event.target.value
-                  )
-                }
-                placeholder="Search by name, warehouse, location, status, or reference..."
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-blue-400"
-              />
-            </label>
-
-            {/* EXPORT */}
-
-            <button
-              onClick={exportCSV}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white transition hover:bg-blue-700"
-            >
-              <Download className="h-4 w-4" />
-
-              Export CSV
-            </button>
-
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Loading ReliefTrack reports...
+            </p>
           </div>
-        </section>
+        ) : (
+          <>
+            {/* SUMMARY CARDS */}
 
-        {/* REPORT TABLE */}
+            <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
 
-        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+              <SummaryCard
+                title="Inventory Records"
+                value={inventory.length}
+                icon={Package}
+              />
 
-          <div className="border-b border-slate-200 p-5 dark:border-slate-700">
+              <SummaryCard
+                title="Stored Relief Goods"
+                value={formatKg(
+                  totalInventoryWeight
+                )}
+                icon={Package}
+              />
 
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <SummaryCard
+                title="Warehouse Capacity"
+                value={formatKg(
+                  totalWarehouseCapacity
+                )}
+                icon={Warehouse}
+              />
 
-              <div>
-                <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-                  {reportTitle}
-                </h2>
+              <SummaryCard
+                title="Used Capacity"
+                value={formatKg(
+                  totalUsedCapacity
+                )}
+                icon={Warehouse}
+              />
 
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                  {filteredRows.length}{" "}
-                  record
-                  {filteredRows.length !==
-                  1
-                    ? "s"
-                    : ""}{" "}
-                  shown
-                </p>
+              <SummaryCard
+                title="Available Capacity"
+                value={formatKg(
+                  totalAvailableCapacity
+                )}
+                icon={Warehouse}
+              />
+
+            </section>
+
+            {/* CAPACITY WARNING */}
+
+            {overCapacityWarehouses.length >
+              0 && (
+              <div className="rounded-xl border border-red-300 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/30">
+                <div className="flex items-start gap-3">
+
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
+
+                  <div>
+                    <h2 className="font-semibold text-red-900 dark:text-red-300">
+                      Warehouse Capacity Exceeded
+                    </h2>
+
+                    <p className="mt-1 text-sm leading-6 text-red-800 dark:text-red-200">
+                      {overCapacityWarehouses.length}{" "}
+                      warehouse
+                      {overCapacityWarehouses.length >
+                      1
+                        ? "s are"
+                        : " is"}{" "}
+                      currently over the configured
+                      storage capacity.
+
+                      {" "}
+
+                      New inventory additions should
+                      remain blocked until enough stock
+                      is distributed or removed.
+                    </p>
+                  </div>
+                </div>
               </div>
+            )}
 
-              {reportType ===
-                "distributions" && (
-                <div className="inline-flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">
+            {/* REPORT CONTROLS */}
 
-                  <Truck className="h-4 w-4" />
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
 
-                  Distributed Weight:{" "}
+              <div className="grid gap-4 md:grid-cols-[1fr_2fr_auto] md:items-end">
 
-                  {formatKg(
-                    distributions.reduce(
-                      (
-                        sum,
-                        distribution
-                      ) =>
-                        sum +
-                        Number(
-                          distribution.storageWeightKg ||
-                            0
-                        ),
-                      0
-                    )
+                {/* REPORT TYPE */}
+
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-slate-700 dark:text-slate-200">
+                    Report Type
+                  </span>
+
+                  <select
+                    value={reportType}
+                    onChange={(event) => {
+                      setReportType(
+                        event.target.value
+                      );
+
+                      setSearchTerm("");
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-slate-900 outline-none transition-colors focus:border-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:border-blue-400"
+                  >
+                    <option value="inventory">
+                      Inventory Report
+                    </option>
+
+                    <option value="warehouses">
+                      Warehouse Capacity Report
+                    </option>
+
+                    <option value="distributions">
+                      Distribution Report
+                    </option>
+                  </select>
+                </label>
+
+                {/* SEARCH */}
+
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-slate-700 dark:text-slate-200">
+                    Search Report
+                  </span>
+
+                  <input
+                    type="search"
+                    value={searchTerm}
+                    onChange={(event) =>
+                      setSearchTerm(
+                        event.target.value
+                      )
+                    }
+                    placeholder="Search by name, warehouse, location, status, or reference..."
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-blue-400"
+                  />
+                </label>
+
+                {/* EXPORT */}
+
+                <button
+                  onClick={exportCSV}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white transition hover:bg-blue-700"
+                >
+                  <Download className="h-4 w-4" />
+
+                  Export CSV
+                </button>
+
+              </div>
+            </section>
+
+            {/* REPORT TABLE */}
+
+            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+
+              <div className="border-b border-slate-200 p-5 dark:border-slate-700">
+
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+                      {reportTitle}
+                    </h2>
+
+                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                      {filteredRows.length}{" "}
+                      record
+                      {filteredRows.length !==
+                      1
+                        ? "s"
+                        : ""}{" "}
+                      shown
+                    </p>
+                  </div>
+
+                  {reportType ===
+                    "distributions" && (
+                    <div className="inline-flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">
+
+                      <Truck className="h-4 w-4" />
+
+                      Distributed Weight:{" "}
+
+                      {formatKg(
+                        distributions.reduce(
+                          (
+                            sum,
+                            distribution
+                          ) =>
+                            sum +
+                            Number(
+                              distribution.weightKg ??
+                                distribution.storageWeightKg ??
+                                0
+                            ),
+                          0
+                        )
+                      )}
+
+                    </div>
                   )}
 
                 </div>
-              )}
-
-            </div>
-          </div>
-
-          {/* EMPTY */}
-
-          {filteredRows.length === 0 ? (
-            <div className="p-10 text-center">
-
-              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800">
-
-                <BarChart3 className="h-6 w-6 text-slate-400 dark:text-slate-500" />
-
               </div>
 
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                No records match your search.
-              </p>
+              {/* EMPTY */}
 
-            </div>
-          ) : (
+              {filteredRows.length === 0 ? (
+                <div className="p-10 text-center">
 
-            /* TABLE */
+                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800">
 
-            <div className="overflow-x-auto">
+                    <BarChart3 className="h-6 w-6 text-slate-400 dark:text-slate-500" />
 
-              <table className="w-full min-w-[900px] text-left text-sm">
+                  </div>
 
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    No records match your search.
+                  </p>
 
-                  <tr>
+                </div>
+              ) : (
 
-                    {Object.keys(
-                      filteredRows[0]
-                    ).map((header) => (
-                      <th
-                        key={header}
-                        className="whitespace-nowrap px-5 py-4 font-semibold"
-                      >
-                        {header}
-                      </th>
-                    ))}
+                /* TABLE */
 
-                  </tr>
+                <div className="overflow-x-auto">
 
-                </thead>
+                  <table className="w-full min-w-[900px] text-left text-sm">
 
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
 
-                  {filteredRows.map(
-                    (row, index) => (
-                      <tr
-                        key={index}
-                        className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                      >
+                      <tr>
 
-                        {Object.entries(
-                          row
-                        ).map(
-                          (
-                            [
-                              header,
-                              value,
-                            ],
-                            cellIndex
-                          ) => {
-
-                            const isCapacityStatus =
-                              header ===
-                              "Capacity Status";
-
-                            const isOverCapacity =
-                              String(
-                                value
-                              ) ===
-                              "Over Capacity";
-
-                            const isNearCapacity =
-                              String(
-                                value
-                              ) ===
-                              "Near Capacity";
-
-                            const isStatus =
-                              header ===
-                              "Status";
-
-                            const isDelivered =
-                              String(
-                                value
-                              ) ===
-                              "Delivered";
-
-                            const isInTransit =
-                              String(
-                                value
-                              ) ===
-                              "In Transit";
-
-                            const isPending =
-                              String(
-                                value
-                              ) ===
-                              "Pending";
-
-                            const isOutOfStock =
-                              String(
-                                value
-                              ) ===
-                              "Out of Stock";
-
-                            const isLowStock =
-                              String(
-                                value
-                              ) ===
-                              "Low Stock";
-
-                            if (
-                              isCapacityStatus &&
-                              isOverCapacity
-                            ) {
-                              return (
-                                <td
-                                  key={
-                                    cellIndex
-                                  }
-                                  className="whitespace-nowrap px-5 py-4"
-                                >
-                                  <span className="inline-flex items-center gap-1.5 rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">
-
-                                    <AlertTriangle className="h-3.5 w-3.5" />
-
-                                    Over Capacity
-
-                                  </span>
-                                </td>
-                              );
-                            }
-
-                            if (
-                              isCapacityStatus &&
-                              isNearCapacity
-                            ) {
-                              return (
-                                <td
-                                  key={
-                                    cellIndex
-                                  }
-                                  className="whitespace-nowrap px-5 py-4"
-                                >
-                                  <span className="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-700 dark:bg-yellow-950/50 dark:text-yellow-300">
-                                    Near Capacity
-                                  </span>
-                                </td>
-                              );
-                            }
-
-                            if (
-                              isStatus &&
-                              isDelivered
-                            ) {
-                              return (
-                                <td
-                                  key={
-                                    cellIndex
-                                  }
-                                  className="whitespace-nowrap px-5 py-4"
-                                >
-                                  <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
-                                    Delivered
-                                  </span>
-                                </td>
-                              );
-                            }
-
-                            if (
-                              isStatus &&
-                              isInTransit
-                            ) {
-                              return (
-                                <td
-                                  key={
-                                    cellIndex
-                                  }
-                                  className="whitespace-nowrap px-5 py-4"
-                                >
-                                  <span className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
-                                    In Transit
-                                  </span>
-                                </td>
-                              );
-                            }
-
-                            if (
-                              isStatus &&
-                              isPending
-                            ) {
-                              return (
-                                <td
-                                  key={
-                                    cellIndex
-                                  }
-                                  className="whitespace-nowrap px-5 py-4"
-                                >
-                                  <span className="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-700 dark:bg-yellow-950/50 dark:text-yellow-300">
-                                    Pending
-                                  </span>
-                                </td>
-                              );
-                            }
-
-                            if (
-                              isStatus &&
-                              isOutOfStock
-                            ) {
-                              return (
-                                <td
-                                  key={
-                                    cellIndex
-                                  }
-                                  className="whitespace-nowrap px-5 py-4"
-                                >
-                                  <span className="inline-flex items-center rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">
-                                    Out of Stock
-                                  </span>
-                                </td>
-                              );
-                            }
-
-                            if (
-                              isStatus &&
-                              isLowStock
-                            ) {
-                              return (
-                                <td
-                                  key={
-                                    cellIndex
-                                  }
-                                  className="whitespace-nowrap px-5 py-4"
-                                >
-                                  <span className="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-700 dark:bg-yellow-950/50 dark:text-yellow-300">
-                                    Low Stock
-                                  </span>
-                                </td>
-                              );
-                            }
-
-                            return (
-                              <td
-                                key={
-                                  cellIndex
-                                }
-                                className="whitespace-nowrap px-5 py-4 text-slate-700 dark:text-slate-300"
-                              >
-                                {String(
-                                  value ?? ""
-                                )}
-                              </td>
-                            );
-                          }
-                        )}
+                        {Object.keys(
+                          filteredRows[0]
+                        ).map((header) => (
+                          <th
+                            key={header}
+                            className="whitespace-nowrap px-5 py-4 font-semibold"
+                          >
+                            {header}
+                          </th>
+                        ))}
 
                       </tr>
-                    )
-                  )}
 
-                </tbody>
+                    </thead>
 
-              </table>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
 
-            </div>
-          )}
-        </section>
+                      {filteredRows.map(
+                        (row, index) => (
+                          <tr
+                            key={index}
+                            className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                          >
 
-        {/* REPORT EXPLANATION */}
+                            {Object.entries(
+                              row
+                            ).map(
+                              (
+                                [
+                                  header,
+                                  value,
+                                ],
+                                cellIndex
+                              ) => {
 
-        <section className="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900 dark:bg-blue-950/30">
+                                const isCapacityStatus =
+                                  header ===
+                                  "Capacity Status";
 
-          <h2 className="font-semibold text-blue-900 dark:text-blue-300">
-            How the Reports Use Warehouse Capacity
-          </h2>
+                                const isOverCapacity =
+                                  String(
+                                    value
+                                  ) ===
+                                  "Over Capacity";
 
-          <p className="mt-2 text-sm leading-6 text-blue-800 dark:text-blue-200">
-            ReliefTrack calculates warehouse storage
-            load using the quantity of each inventory
-            item multiplied by its kilogram-per-unit
-            value. This allows different inventory
-            units such as kilograms, cans, bottles,
-            kits, and pieces to be measured using a
-            common storage unit: kilograms.
-          </p>
+                                const isNearCapacity =
+                                  String(
+                                    value
+                                  ) ===
+                                  "Near Capacity";
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                                const isStatus =
+                                  header ===
+                                  "Status";
 
-            <div className="rounded-lg border border-blue-200 bg-white/70 p-4 dark:border-blue-900 dark:bg-slate-900/40">
+                                const isDelivered =
+                                  String(
+                                    value
+                                  ) ===
+                                  "Delivered";
 
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
-                Storage Load
+                                const isInTransit =
+                                  String(
+                                    value
+                                  ) ===
+                                  "In Transit";
+
+                                const isPending =
+                                  String(
+                                    value
+                                  ) ===
+                                  "Pending";
+
+                                const isOutOfStock =
+                                  String(
+                                    value
+                                  ) ===
+                                  "Out of Stock";
+
+                                const isLowStock =
+                                  String(
+                                    value
+                                  ) ===
+                                  "Low Stock";
+
+                                const isBlockchain =
+                                  header ===
+                                  "Blockchain";
+
+                                const isVerified =
+                                  String(
+                                    value
+                                  ) ===
+                                  "Verified";
+
+                                if (
+                                  isCapacityStatus &&
+                                  isOverCapacity
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">
+
+                                        <AlertTriangle className="h-3.5 w-3.5" />
+
+                                        Over Capacity
+
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isCapacityStatus &&
+                                  isNearCapacity
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-700 dark:bg-yellow-950/50 dark:text-yellow-300">
+                                        Near Capacity
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isStatus &&
+                                  isDelivered
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
+                                        Delivered
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isStatus &&
+                                  isInTransit
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
+                                        In Transit
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isStatus &&
+                                  isPending
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-700 dark:bg-yellow-950/50 dark:text-yellow-300">
+                                        Pending
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isStatus &&
+                                  isOutOfStock
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">
+                                        Out of Stock
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isStatus &&
+                                  isLowStock
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-700 dark:bg-yellow-950/50 dark:text-yellow-300">
+                                        Low Stock
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isBlockchain &&
+                                  isVerified
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
+                                        Verified
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                if (
+                                  isBlockchain &&
+                                  !isVerified
+                                ) {
+                                  return (
+                                    <td
+                                      key={
+                                        cellIndex
+                                      }
+                                      className="whitespace-nowrap px-5 py-4"
+                                    >
+                                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 dark:bg-slate-800 dark:text-slate-300">
+                                        Not Recorded
+                                      </span>
+                                    </td>
+                                  );
+                                }
+
+                                return (
+                                  <td
+                                    key={
+                                      cellIndex
+                                    }
+                                    className="whitespace-nowrap px-5 py-4 text-slate-700 dark:text-slate-300"
+                                  >
+                                    {String(
+                                      value ?? ""
+                                    )}
+                                  </td>
+                                );
+                              }
+                            )}
+
+                          </tr>
+                        )
+                      )}
+
+                    </tbody>
+
+                  </table>
+
+                </div>
+              )}
+            </section>
+
+            {/* REPORT EXPLANATION */}
+
+            <section className="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900 dark:bg-blue-950/30">
+
+              <h2 className="font-semibold text-blue-900 dark:text-blue-300">
+                How the Reports Use Warehouse Capacity
+              </h2>
+
+              <p className="mt-2 text-sm leading-6 text-blue-800 dark:text-blue-200">
+                ReliefTrack calculates warehouse storage
+                load using the quantity of each inventory
+                item multiplied by its kilogram-per-unit
+                value. This allows different inventory
+                units such as kilograms, cans, bottles,
+                kits, and pieces to be measured using a
+                common storage unit: kilograms.
               </p>
 
-              <p className="mt-2 text-sm font-semibold text-blue-900 dark:text-blue-100">
-                Quantity × kg per unit
-              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
 
-            </div>
+                <div className="rounded-lg border border-blue-200 bg-white/70 p-4 dark:border-blue-900 dark:bg-slate-900/40">
 
-            <div className="rounded-lg border border-blue-200 bg-white/70 p-4 dark:border-blue-900 dark:bg-slate-900/40">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                    Storage Load
+                  </p>
 
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
-                Available Capacity
-              </p>
+                  <p className="mt-2 text-sm font-semibold text-blue-900 dark:text-blue-100">
+                    Quantity × kg per unit
+                  </p>
 
-              <p className="mt-2 text-sm font-semibold text-blue-900 dark:text-blue-100">
-                Capacity − Current Load
-              </p>
+                </div>
 
-            </div>
+                <div className="rounded-lg border border-blue-200 bg-white/70 p-4 dark:border-blue-900 dark:bg-slate-900/40">
 
-            <div className="rounded-lg border border-blue-200 bg-white/70 p-4 dark:border-blue-900 dark:bg-slate-900/40">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                    Available Capacity
+                  </p>
 
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
-                Capacity Rule
-              </p>
+                  <p className="mt-2 text-sm font-semibold text-blue-900 dark:text-blue-100">
+                    Capacity − Current Load
+                  </p>
 
-              <p className="mt-2 text-sm font-semibold text-blue-900 dark:text-blue-100">
-                New stock cannot exceed capacity
-              </p>
+                </div>
 
-            </div>
+                <div className="rounded-lg border border-blue-200 bg-white/70 p-4 dark:border-blue-900 dark:bg-slate-900/40">
 
-          </div>
-        </section>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                    Capacity Rule
+                  </p>
 
-        {/* DISCLAIMER */}
+                  <p className="mt-2 text-sm font-semibold text-blue-900 dark:text-blue-100">
+                    New stock cannot exceed capacity
+                  </p>
 
-        <p className="text-xs text-slate-400 dark:text-slate-500">
-          Report figures are based on the current
-          ReliefTrack prototype data. Verify records
-          before using them for operational or official
-          reporting.
-        </p>
+                </div>
 
+              </div>
+            </section>
+
+            {/* DISCLAIMER */}
+
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Report figures are based on the current
+              ReliefTrack Redis-backed system data.
+              Blockchain verification status is included
+              where available.
+            </p>
+          </>
+        )}
       </div>
     </main>
   );

@@ -13,42 +13,84 @@ import {
   Truck,
   Warehouse,
   ExternalLink,
+  RefreshCw,
 } from "lucide-react";
 
 import {
-  getData,
-  subscribeToData,
-} from "@/lib/relieftrack-store";
-
-import {
   RELIEFTRACK_CONTRACT_ADDRESS,
+  SEPOLIA_CHAIN_ID,
 } from "@/lib/blockchain/relieftrack";
+
+const SEPOLIA_EXPLORER =
+  "https://sepolia.etherscan.io";
 
 export default function BlockchainPage() {
   const [distributions, setDistributions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
 
-  useEffect(() => {
-    const loadData = () => {
-      const data = getData();
+  /*
+   * =========================================================
+   * LOAD DISTRIBUTIONS FROM REDIS THROUGH API
+   * =========================================================
+   */
+  const loadDistributions = async (isRefresh = false) => {
+    try {
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+
+      setError("");
+
+      const response = await fetch("/api/distributions", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message ||
+            "Unable to load distribution records."
+        );
+      }
 
       setDistributions(
-        Array.isArray(data?.distributions)
+        Array.isArray(data.distributions)
           ? data.distributions
           : []
       );
-    };
+    } catch (error) {
+      console.error(
+        "Failed to load blockchain records:",
+        error
+      );
 
-    loadData();
+      setError(
+        error?.message ||
+          "Unable to load blockchain records."
+      );
 
-    const unsubscribe = subscribeToData(loadData);
+      setDistributions([]);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
 
-    return () => {
-      if (typeof unsubscribe === "function") {
-        unsubscribe();
-      }
-    };
+  useEffect(() => {
+    loadDistributions();
   }, []);
 
+  /*
+   * =========================================================
+   * SUMMARY
+   * =========================================================
+   */
   const summary = useMemo(() => {
     const total = distributions.length;
 
@@ -64,17 +106,18 @@ export default function BlockchainPage() {
       (record) => record.status === "Delivered"
     ).length;
 
-    const blockchainVerified = distributions.filter(
-      (record) =>
-        record.blockchainVerified === true &&
-        record.blockchainTransactionHash
-    ).length;
+    const blockchainVerified =
+      distributions.filter(
+        (record) =>
+          record.blockchainVerified === true &&
+          record.blockchainTransactionHash
+      ).length;
 
     const totalWeight = distributions.reduce(
       (total, record) => {
         const weight = Number(
-          record.storageWeightKg ??
-            record.weightKg ??
+          record.weightKg ??
+            record.storageWeightKg ??
             0
         );
 
@@ -97,6 +140,11 @@ export default function BlockchainPage() {
     };
   }, [distributions]);
 
+  /*
+   * =========================================================
+   * HELPERS
+   * =========================================================
+   */
   const formatNumber = (value) => {
     const number = Number(value);
 
@@ -136,6 +184,26 @@ export default function BlockchainPage() {
       year: "numeric",
       month: "short",
       day: "numeric",
+    });
+  };
+
+  const formatDateTime = (date) => {
+    if (!date) {
+      return "—";
+    }
+
+    const parsedDate = new Date(date);
+
+    if (Number.isNaN(parsedDate.getTime())) {
+      return date;
+    }
+
+    return parsedDate.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
     });
   };
 
@@ -198,34 +266,73 @@ export default function BlockchainPage() {
     );
   };
 
+  const getTransactionUrl = (hash) => {
+    if (!hash) {
+      return null;
+    }
+
+    return `${SEPOLIA_EXPLORER}/tx/${hash}`;
+  };
+
+  const getAddressUrl = (address) => {
+    if (!address) {
+      return null;
+    }
+
+    return `${SEPOLIA_EXPLORER}/address/${address}`;
+  };
+
+  /*
+   * =========================================================
+   * RENDER
+   * =========================================================
+   */
   return (
     <main className="min-h-screen bg-gray-50 p-4 transition-colors sm:p-6 lg:p-8 dark:bg-slate-950">
       <div className="mx-auto max-w-7xl">
 
-        {/* =========================================================
+        {/* =====================================================
             PAGE HEADER
-        ========================================================== */}
+        ====================================================== */}
         <div className="mb-6">
           <div className="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">
             <Blocks className="h-4 w-4" />
-
             <span>ReliefTrack</span>
           </div>
 
-          <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl dark:text-white">
-            Blockchain Records
-          </h1>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl dark:text-white">
+                Blockchain Records
+              </h1>
 
-          <p className="mt-2 max-w-3xl text-sm text-gray-600 sm:text-base dark:text-slate-300">
-            Review disaster relief distribution records that have been
-            recorded and verified through the ReliefTrack blockchain
-            smart contract.
-          </p>
+              <p className="mt-2 max-w-3xl text-sm text-gray-600 sm:text-base dark:text-slate-300">
+                Review disaster relief distribution records that have been
+                recorded and verified through the ReliefTrack blockchain
+                smart contract on Ethereum Sepolia.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => loadDistributions(true)}
+              disabled={refreshing}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${
+                  refreshing ? "animate-spin" : ""
+                }`}
+              />
+
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
         </div>
 
-        {/* =========================================================
+        {/* =====================================================
             BLOCKCHAIN STATUS NOTICE
-        ========================================================== */}
+        ====================================================== */}
         <div className="mb-6 rounded-xl border border-green-300 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950/30">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 shrink-0 rounded-lg bg-green-100 p-2 dark:bg-green-900/50">
@@ -238,316 +345,518 @@ export default function BlockchainPage() {
               </h2>
 
               <p className="mt-1 text-sm leading-6 text-green-800 dark:text-green-200">
-                ReliefTrack uses the local Anvil blockchain for prototype
-                verification. Delivered distributions can be submitted
-                through MetaMask to the ReliefTrack smart contract. Confirmed
-                transactions are stored with their transaction hash, block
-                number, wallet address, and verification status.
+                ReliefTrack uses the Ethereum Sepolia test network for
+                blockchain verification. Delivered distributions can be
+                submitted through MetaMask to the ReliefTrack smart contract.
+                Confirmed transactions are stored with their transaction hash,
+                block number, wallet address, and verification status.
               </p>
 
               <div className="mt-3 flex flex-wrap gap-2">
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-900/50 dark:text-green-300">
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  Anvil Local
+                  Ethereum Sepolia
                 </span>
 
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-900/50 dark:text-green-300">
-                  Chain ID: 31337
+                  Chain ID: {SEPOLIA_CHAIN_ID.toString()}
+                </span>
+
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-900/50 dark:text-green-300">
+                  Smart Contract Active
                 </span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* =========================================================
-            SUMMARY CARDS
-        ========================================================== */}
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {/* =====================================================
+            ERROR
+        ====================================================== */}
+        {error && (
+          <div className="mb-6 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            <p className="font-semibold">
+              Unable to load blockchain records
+            </p>
 
-          {/* Total Records */}
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
-                  Distribution Records
-                </p>
-
-                <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">
-                  {formatNumber(summary.total)}
-                </p>
-              </div>
-
-              <div className="rounded-lg bg-blue-100 p-3 dark:bg-blue-950/50">
-                <FileCheck2 className="h-6 w-6 text-blue-600 dark:text-blue-400" />
-              </div>
-            </div>
-
-            <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
-              Records in ReliefTrack
+            <p className="mt-1">
+              {error}
             </p>
           </div>
+        )}
 
-          {/* Total Weight */}
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
-                  Distributed Weight
-                </p>
+        {/* =====================================================
+            LOADING
+        ====================================================== */}
+        {loading ? (
+          <section className="rounded-xl border border-gray-200 bg-white p-12 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900">
+            <RefreshCw className="mx-auto h-8 w-8 animate-spin text-blue-600 dark:text-blue-400" />
 
-                <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">
-                  {formatNumber(summary.totalWeight)}
-
-                  <span className="ml-1 text-base font-semibold">
-                    kg
-                  </span>
-                </p>
-              </div>
-
-              <div className="rounded-lg bg-purple-100 p-3 dark:bg-purple-950/50">
-                <Package className="h-6 w-6 text-purple-600 dark:text-purple-400" />
-              </div>
-            </div>
-
-            <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
-              Total relief goods distributed
+            <p className="mt-4 font-semibold text-gray-800 dark:text-white">
+              Loading blockchain records...
             </p>
-          </div>
 
-          {/* Delivered */}
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
-                  Delivered
-                </p>
-
-                <p className="mt-2 text-3xl font-bold text-green-600 dark:text-green-400">
-                  {formatNumber(summary.delivered)}
-                </p>
-              </div>
-
-              <div className="rounded-lg bg-green-100 p-3 dark:bg-green-950/50">
-                <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-400" />
-              </div>
-            </div>
-
-            <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
-              Completed distribution records
+            <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
+              Retrieving distribution records from Redis.
             </p>
-          </div>
+          </section>
+        ) : (
+          <>
+            {/* =================================================
+                SUMMARY CARDS
+            ================================================== */}
+            <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
 
-          {/* Blockchain */}
-          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
-                  Blockchain Verified
-                </p>
-
-                <p className="mt-2 text-3xl font-bold text-blue-600 dark:text-blue-400">
-                  {formatNumber(summary.blockchainVerified)}
-                </p>
-              </div>
-
-              <div className="rounded-lg bg-blue-100 p-3 dark:bg-blue-950/50">
-                <Link2 className="h-6 w-6 text-blue-600 dark:text-blue-400" />
-              </div>
-            </div>
-
-            <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
-              Records confirmed on-chain
-            </p>
-          </div>
-        </div>
-
-        {/* =========================================================
-            STATUS SUMMARY
-        ========================================================== */}
-        {distributions.length > 0 && (
-          <section className="mb-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-            <div className="mb-4">
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                Distribution Status
-              </h2>
-
-              <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
-                Current status of relief distribution records and their
-                blockchain verification.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
-              {/* Pending */}
-              <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 dark:border-yellow-900 dark:bg-yellow-950/20">
-                <div className="flex items-center gap-3">
-                  <Clock3 className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
-
+              {/* Total Records */}
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
-                      Pending
+                    <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
+                      Distribution Records
                     </p>
 
-                    <p className="text-2xl font-bold text-yellow-900 dark:text-yellow-200">
-                      {summary.pending}
+                    <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">
+                      {formatNumber(summary.total)}
                     </p>
                   </div>
-                </div>
-              </div>
 
-              {/* In Transit */}
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/20">
-                <div className="flex items-center gap-3">
-                  <Truck className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-
-                  <div>
-                    <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
-                      In Transit
-                    </p>
-
-                    <p className="text-2xl font-bold text-blue-900 dark:text-blue-200">
-                      {summary.inTransit}
-                    </p>
+                  <div className="rounded-lg bg-blue-100 p-3 dark:bg-blue-950/50">
+                    <FileCheck2 className="h-6 w-6 text-blue-600 dark:text-blue-400" />
                   </div>
                 </div>
+
+                <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+                  Records stored in Redis
+                </p>
+              </div>
+
+              {/* Total Weight */}
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
+                      Distributed Weight
+                    </p>
+
+                    <p className="mt-2 text-3xl font-bold text-gray-900 dark:text-white">
+                      {formatNumber(summary.totalWeight)}
+
+                      <span className="ml-1 text-base font-semibold">
+                        kg
+                      </span>
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg bg-purple-100 p-3 dark:bg-purple-950/50">
+                    <Package className="h-6 w-6 text-purple-600 dark:text-purple-400" />
+                  </div>
+                </div>
+
+                <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+                  Total relief goods distributed
+                </p>
               </div>
 
               {/* Delivered */}
-              <div className="rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-950/20">
-                <div className="flex items-center gap-3">
-                  <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
-
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-green-800 dark:text-green-300">
+                    <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
                       Delivered
                     </p>
 
-                    <p className="text-2xl font-bold text-green-900 dark:text-green-200">
-                      {summary.delivered}
+                    <p className="mt-2 text-3xl font-bold text-green-600 dark:text-green-400">
+                      {formatNumber(summary.delivered)}
                     </p>
                   </div>
-                </div>
-              </div>
 
-              {/* Blockchain Verified */}
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/20">
-                <div className="flex items-center gap-3">
-                  <ShieldCheck className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-
-                  <div>
-                    <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
-                      Blockchain Verified
-                    </p>
-
-                    <p className="text-2xl font-bold text-blue-900 dark:text-blue-200">
-                      {summary.blockchainVerified}
-                    </p>
+                  <div className="rounded-lg bg-green-100 p-3 dark:bg-green-950/50">
+                    <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-400" />
                   </div>
                 </div>
-              </div>
 
-            </div>
-          </section>
-        )}
-
-        {/* =========================================================
-            RECORDS TABLE
-        ========================================================== */}
-        <section className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
-
-          {/* Section Header */}
-          <div className="border-b border-gray-200 px-5 py-4 dark:border-slate-700">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                  Distribution Record History
-                </h2>
-
-                <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
-                  Distribution records and their blockchain verification
-                  status.
+                <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+                  Completed distribution records
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 dark:bg-blue-950/30">
-                <ShieldCheck className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+              {/* Blockchain */}
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-500 dark:text-slate-400">
+                      Blockchain Verified
+                    </p>
 
-                <span className="text-xs font-medium text-blue-700 dark:text-blue-300">
-                  Blockchain Enabled
-                </span>
+                    <p className="mt-2 text-3xl font-bold text-blue-600 dark:text-blue-400">
+                      {formatNumber(summary.blockchainVerified)}
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg bg-blue-100 p-3 dark:bg-blue-950/50">
+                    <Link2 className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                  </div>
+                </div>
+
+                <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+                  Records confirmed on-chain
+                </p>
               </div>
             </div>
-          </div>
 
-          {/* =======================================================
-              EMPTY STATE
-          ======================================================== */}
-          {distributions.length === 0 ? (
-            <div className="px-5 py-16 text-center">
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gray-100 dark:bg-slate-800">
-                <FileCheck2 className="h-7 w-7 text-gray-400 dark:text-slate-500" />
+            {/* =================================================
+                STATUS SUMMARY
+            ================================================== */}
+            {distributions.length > 0 && (
+              <section className="mb-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                <div className="mb-4">
+                  <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    Distribution Status
+                  </h2>
+
+                  <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
+                    Current status of relief distribution records and their
+                    blockchain verification.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+
+                  <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 dark:border-yellow-900 dark:bg-yellow-950/20">
+                    <div className="flex items-center gap-3">
+                      <Clock3 className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
+
+                      <div>
+                        <p className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
+                          Pending
+                        </p>
+
+                        <p className="text-2xl font-bold text-yellow-900 dark:text-yellow-200">
+                          {summary.pending}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/20">
+                    <div className="flex items-center gap-3">
+                      <Truck className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+
+                      <div>
+                        <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
+                          In Transit
+                        </p>
+
+                        <p className="text-2xl font-bold text-blue-900 dark:text-blue-200">
+                          {summary.inTransit}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-950/20">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
+
+                      <div>
+                        <p className="text-sm font-medium text-green-800 dark:text-green-300">
+                          Delivered
+                        </p>
+
+                        <p className="text-2xl font-bold text-green-900 dark:text-green-200">
+                          {summary.delivered}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/20">
+                    <div className="flex items-center gap-3">
+                      <ShieldCheck className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+
+                      <div>
+                        <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
+                          Blockchain Verified
+                        </p>
+
+                        <p className="text-2xl font-bold text-blue-900 dark:text-blue-200">
+                          {summary.blockchainVerified}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* =================================================
+                RECORDS TABLE
+            ================================================== */}
+            <section className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+
+              <div className="border-b border-gray-200 px-5 py-4 dark:border-slate-700">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                      Distribution Record History
+                    </h2>
+
+                    <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
+                      Distribution records retrieved from Redis with their
+                      Ethereum Sepolia blockchain verification status.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 dark:bg-blue-950/30">
+                    <ShieldCheck className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+
+                    <span className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                      Sepolia Blockchain
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              <h3 className="font-semibold text-gray-800 dark:text-slate-100">
-                No distribution records yet
-              </h3>
+              {distributions.length === 0 ? (
+                <div className="px-5 py-16 text-center">
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gray-100 dark:bg-slate-800">
+                    <FileCheck2 className="h-7 w-7 text-gray-400 dark:text-slate-500" />
+                  </div>
 
-              <p className="mx-auto mt-2 max-w-md text-sm text-gray-500 dark:text-slate-400">
-                Once a relief distribution is created, its record will appear
-                here. Delivered records can then be submitted to the
-                blockchain for verification.
-              </p>
-            </div>
-          ) : (
-            <>
-              {/* =====================================================
-                  DESKTOP TABLE
-              ====================================================== */}
-              <div className="hidden overflow-x-auto md:block">
-                <table className="w-full text-left text-sm">
+                  <h3 className="font-semibold text-gray-800 dark:text-slate-100">
+                    No distribution records yet
+                  </h3>
 
-                  <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-slate-800 dark:text-slate-400">
-                    <tr>
-                      <th className="px-5 py-4 font-semibold">
-                        Distribution
-                      </th>
+                  <p className="mx-auto mt-2 max-w-md text-sm text-gray-500 dark:text-slate-400">
+                    Once a relief distribution is created, its record will
+                    appear here. Delivered records can then be submitted to
+                    the Ethereum Sepolia blockchain for verification.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* =================================================
+                      DESKTOP TABLE
+                  ================================================== */}
+                  <div className="hidden overflow-x-auto md:block">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-slate-800 dark:text-slate-400">
+                        <tr>
+                          <th className="px-5 py-4 font-semibold">
+                            Distribution
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Warehouse
-                      </th>
+                          <th className="px-5 py-4 font-semibold">
+                            Warehouse
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Relief Item
-                      </th>
+                          <th className="px-5 py-4 font-semibold">
+                            Relief Item
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Quantity
-                      </th>
+                          <th className="px-5 py-4 font-semibold">
+                            Quantity
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Weight
-                      </th>
+                          <th className="px-5 py-4 font-semibold">
+                            Weight
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Destination
-                      </th>
+                          <th className="px-5 py-4 font-semibold">
+                            Destination
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Date
-                      </th>
+                          <th className="px-5 py-4 font-semibold">
+                            Date
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Status
-                      </th>
+                          <th className="px-5 py-4 font-semibold">
+                            Status
+                          </th>
 
-                      <th className="px-5 py-4 font-semibold">
-                        Blockchain
-                      </th>
-                    </tr>
-                  </thead>
+                          <th className="px-5 py-4 font-semibold">
+                            Blockchain
+                          </th>
+                        </tr>
+                      </thead>
 
-                  <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                      <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                        {distributions.map((record, index) => {
+                          const distributionReference =
+                            record.reference ??
+                            `DIST-${record.id ?? index + 1}`;
+
+                          const warehouseName =
+                            record.warehouseName ??
+                            record.warehouse ??
+                            "—";
+
+                          const itemName =
+                            record.itemName ??
+                            record.item ??
+                            record.name ??
+                            "—";
+
+                          const verified =
+                            isBlockchainVerified(record);
+
+                          return (
+                            <tr
+                              key={record.id ?? index}
+                              className="transition hover:bg-gray-50 dark:hover:bg-slate-800/60"
+                            >
+                              <td className="whitespace-nowrap px-5 py-4">
+                                <p className="font-semibold text-gray-900 dark:text-white">
+                                  {distributionReference}
+                                </p>
+
+                                <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                                  ID: {record.id ?? "—"}
+                                </p>
+                              </td>
+
+                              <td className="px-5 py-4">
+                                <div className="flex items-start gap-2">
+                                  <Warehouse className="mt-0.5 h-4 w-4 shrink-0 text-gray-400 dark:text-slate-500" />
+
+                                  <div>
+                                    <p className="font-medium text-gray-800 dark:text-slate-200">
+                                      {warehouseName}
+                                    </p>
+
+                                    {record.warehouseId && (
+                                      <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                                        Warehouse #{record.warehouseId}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+
+                              <td className="px-5 py-4">
+                                <div className="flex items-center gap-2">
+                                  <Package className="h-4 w-4 shrink-0 text-gray-400 dark:text-slate-500" />
+
+                                  <span className="font-medium text-gray-800 dark:text-slate-200">
+                                    {itemName}
+                                  </span>
+                                </div>
+                              </td>
+
+                              <td className="whitespace-nowrap px-5 py-4 text-gray-700 dark:text-slate-300">
+                                <span className="font-medium">
+                                  {formatNumber(record.quantity)}
+                                </span>
+
+                                {record.unit && (
+                                  <span className="ml-1 text-gray-500 dark:text-slate-400">
+                                    {record.unit}
+                                  </span>
+                                )}
+                              </td>
+
+                              <td className="whitespace-nowrap px-5 py-4">
+                                <span className="font-semibold text-gray-800 dark:text-slate-200">
+                                  {formatKg(record.weightKg)}
+                                </span>
+
+                                {record.weightKgPerUnit && (
+                                  <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                                    {record.weightKgPerUnit} kg/unit
+                                  </p>
+                                )}
+                              </td>
+
+                              <td className="px-5 py-4">
+                                <p className="font-medium text-gray-700 dark:text-slate-300">
+                                  {record.destination ?? "—"}
+                                </p>
+
+                                {record.recipient && (
+                                  <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                                    {record.recipient}
+                                  </p>
+                                )}
+                              </td>
+
+                              <td className="whitespace-nowrap px-5 py-4 text-gray-700 dark:text-slate-300">
+                                {formatDate(record.date)}
+                              </td>
+
+                              <td className="whitespace-nowrap px-5 py-4">
+                                <span
+                                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${getStatusStyle(
+                                    record.status
+                                  )}`}
+                                >
+                                  {getStatusIcon(record.status)}
+                                  {record.status ?? "Unknown"}
+                                </span>
+                              </td>
+
+                              <td className="px-5 py-4">
+                                {verified ? (
+                                  <div className="space-y-1">
+                                    <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
+                                      <CheckCircle2 className="h-3.5 w-3.5" />
+                                      Verified
+                                    </span>
+
+                                    <p
+                                      className="font-mono text-xs text-gray-500 dark:text-slate-400"
+                                      title={
+                                        record.blockchainTransactionHash
+                                      }
+                                    >
+                                      {shortenHash(
+                                        record.blockchainTransactionHash
+                                      )}
+                                    </p>
+
+                                    {record.blockchainBlockNumber !==
+                                      undefined &&
+                                      record.blockchainBlockNumber !==
+                                        null && (
+                                        <p className="text-xs text-gray-500 dark:text-slate-400">
+                                          Block:{" "}
+                                          <span className="font-semibold">
+                                            {
+                                              record.blockchainBlockNumber
+                                            }
+                                          </span>
+                                        </p>
+                                      )}
+
+                                    <a
+                                      href={getTransactionUrl(
+                                        record.blockchainTransactionHash
+                                      )}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                                    >
+                                      View on Etherscan
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  </div>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 dark:bg-slate-800 dark:text-slate-300">
+                                    <Link2 className="h-3.5 w-3.5" />
+                                    Not recorded
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* =================================================
+                      MOBILE CARDS
+                  ================================================== */}
+                  <div className="space-y-4 p-4 md:hidden">
                     {distributions.map((record, index) => {
                       const distributionReference =
                         record.reference ??
@@ -568,28 +877,41 @@ export default function BlockchainPage() {
                         isBlockchainVerified(record);
 
                       return (
-                        <tr
+                        <article
                           key={record.id ?? index}
-                          className="transition hover:bg-gray-50 dark:hover:bg-slate-800/60"
+                          className="rounded-xl border border-gray-200 p-4 transition-colors dark:border-slate-700 dark:bg-slate-900"
                         >
-                          {/* Distribution */}
-                          <td className="whitespace-nowrap px-5 py-4">
-                            <p className="font-semibold text-gray-900 dark:text-white">
-                              {distributionReference}
-                            </p>
+                          <div className="mb-4 flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs text-gray-500 dark:text-slate-400">
+                                Distribution
+                              </p>
 
-                            <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                              ID: {record.id ?? "—"}
-                            </p>
-                          </td>
+                              <p className="mt-1 break-all font-bold text-gray-900 dark:text-white">
+                                {distributionReference}
+                              </p>
+                            </div>
 
-                          {/* Warehouse */}
-                          <td className="px-5 py-4">
-                            <div className="flex items-start gap-2">
-                              <Warehouse className="mt-0.5 h-4 w-4 shrink-0 text-gray-400 dark:text-slate-500" />
+                            <span
+                              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${getStatusStyle(
+                                record.status
+                              )}`}
+                            >
+                              {getStatusIcon(record.status)}
+                              {record.status ?? "Unknown"}
+                            </span>
+                          </div>
+
+                          <div className="mb-4 rounded-lg bg-gray-50 p-3 dark:bg-slate-800">
+                            <div className="flex items-start gap-3">
+                              <Warehouse className="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
 
                               <div>
-                                <p className="font-medium text-gray-800 dark:text-slate-200">
+                                <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                  Warehouse
+                                </p>
+
+                                <p className="mt-1 font-semibold text-gray-900 dark:text-white">
                                   {warehouseName}
                                 </p>
 
@@ -600,535 +922,472 @@ export default function BlockchainPage() {
                                 )}
                               </div>
                             </div>
-                          </td>
+                          </div>
 
-                          {/* Item */}
-                          <td className="px-5 py-4">
-                            <div className="flex items-center gap-2">
-                              <Package className="h-4 w-4 shrink-0 text-gray-400 dark:text-slate-500" />
+                          <div className="space-y-3 text-sm">
+                            <div>
+                              <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                Relief Item
+                              </p>
 
-                              <span className="font-medium text-gray-800 dark:text-slate-200">
+                              <p className="mt-1 font-medium text-gray-800 dark:text-slate-200">
                                 {itemName}
-                              </span>
+                              </p>
                             </div>
-                          </td>
 
-                          {/* Quantity */}
-                          <td className="whitespace-nowrap px-5 py-4 text-gray-700 dark:text-slate-300">
-                            <span className="font-medium">
-                              {formatNumber(record.quantity)}
-                            </span>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                  Quantity
+                                </p>
 
-                            {record.unit && (
-                              <span className="ml-1 text-gray-500 dark:text-slate-400">
-                                {record.unit}
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Weight */}
-                          <td className="whitespace-nowrap px-5 py-4">
-                            <span className="font-semibold text-gray-800 dark:text-slate-200">
-                              {formatKg(
-                                record.storageWeightKg ??
-                                  record.weightKg
-                              )}
-                            </span>
-
-                            {record.weightKgPerUnit && (
-                              <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                                {record.weightKgPerUnit} kg/unit
-                              </p>
-                            )}
-                          </td>
-
-                          {/* Destination */}
-                          <td className="px-5 py-4">
-                            <p className="font-medium text-gray-700 dark:text-slate-300">
-                              {record.destination ?? "—"}
-                            </p>
-
-                            {record.recipient && (
-                              <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                                {record.recipient}
-                              </p>
-                            )}
-                          </td>
-
-                          {/* Date */}
-                          <td className="whitespace-nowrap px-5 py-4 text-gray-700 dark:text-slate-300">
-                            {formatDate(record.date)}
-                          </td>
-
-                          {/* Status */}
-                          <td className="whitespace-nowrap px-5 py-4">
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${getStatusStyle(
-                                record.status
-                              )}`}
-                            >
-                              {getStatusIcon(record.status)}
-
-                              {record.status ?? "Unknown"}
-                            </span>
-                          </td>
-
-                          {/* Blockchain */}
-                          <td className="px-5 py-4">
-                            {verified ? (
-                              <div className="space-y-1">
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
-                                  <CheckCircle2 className="h-3.5 w-3.5" />
-                                  Verified
-                                </span>
-
-                                <p
-                                  className="font-mono text-xs text-gray-500 dark:text-slate-400"
-                                  title={
-                                    record.blockchainTransactionHash
-                                  }
-                                >
-                                  {shortenHash(
-                                    record.blockchainTransactionHash
-                                  )}
+                                <p className="mt-1 font-medium text-gray-800 dark:text-slate-200">
+                                  {formatNumber(record.quantity)}
+                                  {record.unit
+                                    ? ` ${record.unit}`
+                                    : ""}
                                 </p>
                               </div>
+
+                              <div>
+                                <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                  Weight
+                                </p>
+
+                                <p className="mt-1 font-semibold text-gray-800 dark:text-slate-200">
+                                  {formatKg(record.weightKg)}
+                                </p>
+                              </div>
+                            </div>
+
+                            {record.weightKgPerUnit && (
+                              <div>
+                                <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                  Weight per Unit
+                                </p>
+
+                                <p className="mt-1 text-gray-700 dark:text-slate-300">
+                                  {record.weightKgPerUnit} kg
+                                </p>
+                              </div>
+                            )}
+
+                            <div>
+                              <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                Destination
+                              </p>
+
+                              <p className="mt-1 text-gray-700 dark:text-slate-300">
+                                {record.destination ?? "—"}
+                              </p>
+
+                              {record.recipient && (
+                                <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                                  Receiving Center:{" "}
+                                  {record.recipient}
+                                </p>
+                              )}
+                            </div>
+
+                            <div>
+                              <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                Distribution Date
+                              </p>
+
+                              <p className="mt-1 text-gray-700 dark:text-slate-300">
+                                {formatDate(record.date)}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Blockchain */}
+                          <div className="mt-4 border-t border-gray-100 pt-4 dark:border-slate-700">
+                            <div className="flex items-center gap-2">
+                              <Link2 className="h-4 w-4 text-gray-500 dark:text-slate-400" />
+
+                              <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                                Blockchain Record
+                              </p>
+                            </div>
+
+                            {verified ? (
+                              <div className="mt-2 rounded-lg bg-green-50 p-3 dark:bg-green-950/30">
+                                <div className="flex items-center gap-2">
+                                  <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+
+                                  <span className="text-xs font-semibold text-green-700 dark:text-green-300">
+                                    Blockchain Verified
+                                  </span>
+                                </div>
+
+                                <div className="mt-2 space-y-2">
+                                  <div>
+                                    <p className="text-xs text-gray-500 dark:text-slate-400">
+                                      Transaction
+                                    </p>
+
+                                    <p
+                                      className="break-all font-mono text-xs text-gray-700 dark:text-slate-300"
+                                      title={
+                                        record.blockchainTransactionHash
+                                      }
+                                    >
+                                      {
+                                        record.blockchainTransactionHash
+                                      }
+                                    </p>
+                                  </div>
+
+                                  {record.blockchainBlockNumber !==
+                                    undefined &&
+                                    record.blockchainBlockNumber !==
+                                      null && (
+                                      <p className="text-xs text-gray-500 dark:text-slate-400">
+                                        Block:{" "}
+                                        <span className="font-semibold text-gray-700 dark:text-slate-300">
+                                          {
+                                            record.blockchainBlockNumber
+                                          }
+                                        </span>
+                                      </p>
+                                    )}
+
+                                  {record.blockchainWallet && (
+                                    <div>
+                                      <p className="text-xs text-gray-500 dark:text-slate-400">
+                                        Wallet
+                                      </p>
+
+                                      <a
+                                        href={getAddressUrl(
+                                          record.blockchainWallet
+                                        )}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="break-all font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+                                      >
+                                        {
+                                          record.blockchainWallet
+                                        }
+                                      </a>
+                                    </div>
+                                  )}
+
+                                  {record.blockchainRecordedAt && (
+                                    <div>
+                                      <p className="text-xs text-gray-500 dark:text-slate-400">
+                                        Recorded
+                                      </p>
+
+                                      <p className="text-xs text-gray-700 dark:text-slate-300">
+                                        {formatDateTime(
+                                          record.blockchainRecordedAt
+                                        )}
+                                      </p>
+                                    </div>
+                                  )}
+
+                                  <a
+                                    href={getTransactionUrl(
+                                      record.blockchainTransactionHash
+                                    )}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                                  >
+                                    View transaction on Etherscan
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                </div>
+                              </div>
                             ) : (
-                              <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 dark:bg-slate-800 dark:text-slate-300">
-                                <Link2 className="h-3.5 w-3.5" />
-                                Not recorded
+                              <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 dark:bg-slate-800 dark:text-slate-300">
+                                <Database className="h-3.5 w-3.5" />
+                                Not recorded on-chain
                               </span>
                             )}
-                          </td>
-                        </tr>
+                          </div>
+                        </article>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                </>
+              )}
+            </section>
 
-              {/* =====================================================
-                  MOBILE CARDS
-              ====================================================== */}
-              <div className="space-y-4 p-4 md:hidden">
-                {distributions.map((record, index) => {
-                  const distributionReference =
-                    record.reference ??
-                    `DIST-${record.id ?? index + 1}`;
-
-                  const warehouseName =
-                    record.warehouseName ??
-                    record.warehouse ??
-                    "—";
-
-                  const itemName =
-                    record.itemName ??
-                    record.item ??
-                    record.name ??
-                    "—";
-
-                  const verified =
-                    isBlockchainVerified(record);
-
-                  return (
-                    <article
-                      key={record.id ?? index}
-                      className="rounded-xl border border-gray-200 p-4 transition-colors dark:border-slate-700 dark:bg-slate-900"
-                    >
-                      {/* Card Header */}
-                      <div className="mb-4 flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-xs text-gray-500 dark:text-slate-400">
-                            Distribution
-                          </p>
-
-                          <p className="mt-1 break-all font-bold text-gray-900 dark:text-white">
-                            {distributionReference}
-                          </p>
-                        </div>
-
-                        <span
-                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${getStatusStyle(
-                            record.status
-                          )}`}
-                        >
-                          {getStatusIcon(record.status)}
-
-                          {record.status ?? "Unknown"}
-                        </span>
-                      </div>
-
-                      {/* Warehouse */}
-                      <div className="mb-4 rounded-lg bg-gray-50 p-3 dark:bg-slate-800">
-                        <div className="flex items-start gap-3">
-                          <Warehouse className="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
-
-                          <div>
-                            <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                              Warehouse
-                            </p>
-
-                            <p className="mt-1 font-semibold text-gray-900 dark:text-white">
-                              {warehouseName}
-                            </p>
-
-                            {record.warehouseId && (
-                              <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                                Warehouse #{record.warehouseId}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Details */}
-                      <div className="space-y-3 text-sm">
-
-                        <div>
-                          <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                            Relief Item
-                          </p>
-
-                          <p className="mt-1 font-medium text-gray-800 dark:text-slate-200">
-                            {itemName}
-                          </p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                              Quantity
-                            </p>
-
-                            <p className="mt-1 font-medium text-gray-800 dark:text-slate-200">
-                              {formatNumber(record.quantity)}
-                              {record.unit
-                                ? ` ${record.unit}`
-                                : ""}
-                            </p>
-                          </div>
-
-                          <div>
-                            <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                              Storage Weight
-                            </p>
-
-                            <p className="mt-1 font-semibold text-gray-800 dark:text-slate-200">
-                              {formatKg(
-                                record.storageWeightKg ??
-                                  record.weightKg
-                              )}
-                            </p>
-                          </div>
-                        </div>
-
-                        {record.weightKgPerUnit && (
-                          <div>
-                            <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                              Weight per Unit
-                            </p>
-
-                            <p className="mt-1 text-gray-700 dark:text-slate-300">
-                              {record.weightKgPerUnit} kg
-                            </p>
-                          </div>
-                        )}
-
-                        <div>
-                          <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                            Destination
-                          </p>
-
-                          <p className="mt-1 text-gray-700 dark:text-slate-300">
-                            {record.destination ?? "—"}
-                          </p>
-
-                          {record.recipient && (
-                            <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                              Receiving Center:{" "}
-                              {record.recipient}
-                            </p>
-                          )}
-                        </div>
-
-                        <div>
-                          <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                            Distribution Date
-                          </p>
-
-                          <p className="mt-1 text-gray-700 dark:text-slate-300">
-                            {formatDate(record.date)}
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* Blockchain Status */}
-                      <div className="mt-4 border-t border-gray-100 pt-4 dark:border-slate-700">
-                        <div className="flex items-center gap-2">
-                          <Link2 className="h-4 w-4 text-gray-500 dark:text-slate-400" />
-
-                          <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                            Blockchain Record
-                          </p>
-                        </div>
-
-                        {verified ? (
-                          <div className="mt-2 rounded-lg bg-green-50 p-3 dark:bg-green-950/30">
-                            <div className="flex items-center gap-2">
-                              <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
-
-                              <span className="text-xs font-semibold text-green-700 dark:text-green-300">
-                                Blockchain Verified
-                              </span>
-                            </div>
-
-                            <div className="mt-2 space-y-1">
-                              <p className="text-xs text-gray-500 dark:text-slate-400">
-                                Transaction
-                              </p>
-
-                              <p
-                                className="break-all font-mono text-xs text-gray-700 dark:text-slate-300"
-                                title={
-                                  record.blockchainTransactionHash
-                                }
-                              >
-                                {record.blockchainTransactionHash}
-                              </p>
-
-                              {record.blockchainBlockNumber !==
-                                undefined &&
-                                record.blockchainBlockNumber !==
-                                  null && (
-                                  <p className="pt-1 text-xs text-gray-500 dark:text-slate-400">
-                                    Block:{" "}
-                                    <span className="font-semibold text-gray-700 dark:text-slate-300">
-                                      {
-                                        record.blockchainBlockNumber
-                                      }
-                                    </span>
-                                  </p>
-                                )}
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 dark:bg-slate-800 dark:text-slate-300">
-                            <Database className="h-3.5 w-3.5" />
-                            Not recorded on-chain
-                          </span>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </section>
-
-        {/* =========================================================
-            HOW THE RECORD RELATES TO WAREHOUSE CAPACITY
-        ========================================================== */}
-        <section className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5 transition-colors dark:border-blue-900 dark:bg-blue-950/30">
-          <div className="flex items-start gap-3">
-            <div className="shrink-0 rounded-lg bg-blue-100 p-2 dark:bg-blue-900/50">
-              <Warehouse className="h-5 w-5 text-blue-700 dark:text-blue-300" />
-            </div>
-
-            <div>
-              <h2 className="font-semibold text-blue-900 dark:text-blue-300">
-                Warehouse Capacity and Distribution Records
-              </h2>
-
-              <p className="mt-2 text-sm leading-6 text-blue-800 dark:text-blue-200">
-                Each distribution record is connected to the warehouse from
-                which the relief goods were released. The storage weight is
-                calculated using the quantity and the item's kilogram-per-unit
-                value. When a distribution is created, the quantity is removed
-                from warehouse inventory, which also reduces the warehouse's
-                calculated storage load.
-              </p>
-
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-
-                <div className="rounded-lg border border-blue-200 bg-white/70 p-3 dark:border-blue-900 dark:bg-slate-900/40">
-                  <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
-                    Warehouse Capacity
-                  </p>
-
-                  <p className="mt-1 text-sm font-semibold text-blue-900 dark:text-blue-100">
-                    Example: 10,000 kg
-                  </p>
+            {/* =================================================
+                WAREHOUSE CAPACITY
+            ================================================== */}
+            <section className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5 transition-colors dark:border-blue-900 dark:bg-blue-950/30">
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 rounded-lg bg-blue-100 p-2 dark:bg-blue-900/50">
+                  <Warehouse className="h-5 w-5 text-blue-700 dark:text-blue-300" />
                 </div>
 
-                <div className="rounded-lg border border-blue-200 bg-white/70 p-3 dark:border-blue-900 dark:bg-slate-900/40">
-                  <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
-                    Inventory Load
+                <div>
+                  <h2 className="font-semibold text-blue-900 dark:text-blue-300">
+                    Warehouse Capacity and Distribution Records
+                  </h2>
+
+                  <p className="mt-2 text-sm leading-6 text-blue-800 dark:text-blue-200">
+                    Each distribution record is connected to the warehouse
+                    from which the relief goods were released. The storage
+                    weight is calculated using the quantity and the item's
+                    kilogram-per-unit value. When a distribution is created,
+                    the quantity is removed from warehouse inventory, which
+                    also reduces the warehouse's calculated storage load.
                   </p>
 
-                  <p className="mt-1 text-sm font-semibold text-blue-900 dark:text-blue-100">
-                    Quantity × kg per unit
-                  </p>
-                </div>
+                  <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="rounded-lg border border-blue-200 bg-white/70 p-3 dark:border-blue-900 dark:bg-slate-900/40">
+                      <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                        Warehouse Capacity
+                      </p>
 
-                <div className="rounded-lg border border-blue-200 bg-white/70 p-3 dark:border-blue-900 dark:bg-slate-900/40">
-                  <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
-                    Distribution Effect
-                  </p>
+                      <p className="mt-1 text-sm font-semibold text-blue-900 dark:text-blue-100">
+                        Example: 10,000 kg
+                      </p>
+                    </div>
 
-                  <p className="mt-1 text-sm font-semibold text-blue-900 dark:text-blue-100">
-                    Stock and load decrease
-                  </p>
-                </div>
+                    <div className="rounded-lg border border-blue-200 bg-white/70 p-3 dark:border-blue-900 dark:bg-slate-900/40">
+                      <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                        Inventory Load
+                      </p>
 
-              </div>
-            </div>
-          </div>
-        </section>
+                      <p className="mt-1 text-sm font-semibold text-blue-900 dark:text-blue-100">
+                        Quantity × kg per unit
+                      </p>
+                    </div>
 
-        {/* =========================================================
-            BLOCKCHAIN VERIFICATION DETAILS
-        ========================================================== */}
-        <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
-          <div className="flex items-start gap-3">
-            <div className="shrink-0 rounded-lg bg-blue-100 p-2 dark:bg-blue-950/50">
-              <Link2 className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-            </div>
+                    <div className="rounded-lg border border-blue-200 bg-white/70 p-3 dark:border-blue-900 dark:bg-slate-900/40">
+                      <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                        Distribution Effect
+                      </p>
 
-            <div className="w-full">
-              <h2 className="font-semibold text-gray-900 dark:text-white">
-                Blockchain Verification
-              </h2>
-
-              <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-slate-300">
-                Finalized distribution records can be recorded through the
-                ReliefTrack smart contract. The transaction hash and block
-                number provide a verifiable reference for each blockchain
-                transaction.
-              </p>
-
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-
-                {/* Transaction Count */}
-                <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
-                  <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                    Verified Transactions
-                  </p>
-
-                  <p className="mt-1 text-lg font-bold text-green-600 dark:text-green-400">
-                    {summary.blockchainVerified}
-                  </p>
-                </div>
-
-                {/* Smart Contract */}
-                <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
-                  <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                    Smart Contract
-                  </p>
-
-                  <p
-                    className="mt-1 break-all font-mono text-xs font-medium text-gray-700 dark:text-slate-300"
-                    title={RELIEFTRACK_CONTRACT_ADDRESS}
-                  >
-                    {shortenHash(
-                      RELIEFTRACK_CONTRACT_ADDRESS
-                    )}
-                  </p>
-                </div>
-
-                {/* Network */}
-                <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
-                  <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                    Network
-                  </p>
-
-                  <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-slate-200">
-                    Anvil Local
-                  </p>
-
-                  <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                    Chain ID: 31337
-                  </p>
-                </div>
-
-                {/* Verification */}
-                <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
-                  <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
-                    Verification
-                  </p>
-
-                  <p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-green-600 dark:text-green-400">
-                    <CheckCircle2 className="h-4 w-4" />
-                    Active
-                  </p>
-                </div>
-
-              </div>
-
-              {/* Verified Records */}
-              {summary.blockchainVerified > 0 && (
-                <div className="mt-5">
-                  <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-white">
-                    Recent Blockchain Transactions
-                  </h3>
-
-                  <div className="space-y-2">
-                    {distributions
-                      .filter((record) =>
-                        isBlockchainVerified(record)
-                      )
-                      .slice()
-                      .reverse()
-                      .slice(0, 5)
-                      .map((record) => (
-                        <div
-                          key={
-                            record.id ??
-                            record.blockchainTransactionHash
-                          }
-                          className="flex flex-col gap-2 rounded-lg border border-gray-200 p-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700"
-                        >
-                          <div>
-                            <p className="font-semibold text-gray-800 dark:text-slate-200">
-                              {record.reference ?? "Distribution"}
-                            </p>
-
-                            <p className="mt-1 font-mono text-xs text-gray-500 dark:text-slate-400">
-                              {shortenHash(
-                                record.blockchainTransactionHash
-                              )}
-                            </p>
-                          </div>
-
-                          <div className="flex items-center gap-3">
-                            {record.blockchainBlockNumber !==
-                              undefined &&
-                              record.blockchainBlockNumber !==
-                                null && (
-                                <span className="text-xs text-gray-500 dark:text-slate-400">
-                                  Block{" "}
-                                  <span className="font-semibold text-gray-700 dark:text-slate-300">
-                                    {
-                                      record.blockchainBlockNumber
-                                    }
-                                  </span>
-                                </span>
-                              )}
-
-                            <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              Verified
-                            </span>
-                          </div>
-                        </div>
-                      ))}
+                      <p className="mt-1 text-sm font-semibold text-blue-900 dark:text-blue-100">
+                        Stock and load decrease
+                      </p>
+                    </div>
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
-        </section>
+              </div>
+            </section>
 
+            {/* =================================================
+                BLOCKCHAIN VERIFICATION DETAILS
+            ================================================== */}
+            <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-colors dark:border-slate-700 dark:bg-slate-900">
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 rounded-lg bg-blue-100 p-2 dark:bg-blue-950/50">
+                  <Link2 className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                </div>
+
+                <div className="w-full">
+                  <h2 className="font-semibold text-gray-900 dark:text-white">
+                    Blockchain Verification
+                  </h2>
+
+                  <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-slate-300">
+                    Finalized distribution records are recorded through the
+                    ReliefTrack smart contract on Ethereum Sepolia. The
+                    transaction hash, block number, and recording wallet
+                    provide verifiable references for each blockchain
+                    transaction.
+                  </p>
+
+                  <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+
+                    {/* Transactions */}
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
+                      <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                        Verified Transactions
+                      </p>
+
+                      <p className="mt-1 text-lg font-bold text-green-600 dark:text-green-400">
+                        {summary.blockchainVerified}
+                      </p>
+                    </div>
+
+                    {/* Smart Contract */}
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
+                      <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                        Smart Contract
+                      </p>
+
+                      <a
+                        href={`${SEPOLIA_EXPLORER}/address/${RELIEFTRACK_CONTRACT_ADDRESS}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 flex items-center gap-1 break-all font-mono text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
+                        title={RELIEFTRACK_CONTRACT_ADDRESS}
+                      >
+                        {shortenHash(
+                          RELIEFTRACK_CONTRACT_ADDRESS
+                        )}
+
+                        <ExternalLink className="h-3 w-3 shrink-0" />
+                      </a>
+                    </div>
+
+                    {/* Network */}
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
+                      <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                        Network
+                      </p>
+
+                      <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-slate-200">
+                        Ethereum Sepolia
+                      </p>
+
+                      <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                        Chain ID: {SEPOLIA_CHAIN_ID.toString()}
+                      </p>
+                    </div>
+
+                    {/* Verification */}
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-slate-700">
+                      <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                        Verification
+                      </p>
+
+                      <p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-green-600 dark:text-green-400">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Active
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* =================================================
+                      CONTRACT ADDRESS
+                  ================================================== */}
+                  <div className="mt-4 rounded-lg bg-gray-50 p-3 dark:bg-slate-800">
+                    <p className="text-xs font-medium text-gray-500 dark:text-slate-400">
+                      Contract Address
+                    </p>
+
+                    <a
+                      href={`${SEPOLIA_EXPLORER}/address/${RELIEFTRACK_CONTRACT_ADDRESS}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 break-all font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      {RELIEFTRACK_CONTRACT_ADDRESS}
+                    </a>
+                  </div>
+
+                  {/* =================================================
+                      RECENT TRANSACTIONS
+                  ================================================== */}
+                  {summary.blockchainVerified > 0 && (
+                    <div className="mt-5">
+                      <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-white">
+                        Recent Blockchain Transactions
+                      </h3>
+
+                      <div className="space-y-2">
+                        {distributions
+                          .filter((record) =>
+                            isBlockchainVerified(record)
+                          )
+                          .slice()
+                          .sort(
+                            (a, b) =>
+                              new Date(
+                                b.blockchainRecordedAt ||
+                                  b.createdAt ||
+                                  0
+                              ) -
+                              new Date(
+                                a.blockchainRecordedAt ||
+                                  a.createdAt ||
+                                  0
+                              )
+                          )
+                          .slice(0, 5)
+                          .map((record) => (
+                            <div
+                              key={
+                                record.id ??
+                                record.blockchainTransactionHash
+                              }
+                              className="rounded-lg border border-gray-200 p-3 dark:border-slate-700"
+                            >
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                  <p className="font-semibold text-gray-800 dark:text-slate-200">
+                                    {record.reference ??
+                                      "Distribution"}
+                                  </p>
+
+                                  <p className="mt-1 font-mono text-xs text-gray-500 dark:text-slate-400">
+                                    {shortenHash(
+                                      record.blockchainTransactionHash
+                                    )}
+                                  </p>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-3">
+                                  {record.blockchainBlockNumber !==
+                                    undefined &&
+                                    record.blockchainBlockNumber !==
+                                      null && (
+                                      <span className="text-xs text-gray-500 dark:text-slate-400">
+                                        Block{" "}
+                                        <span className="font-semibold text-gray-700 dark:text-slate-300">
+                                          {
+                                            record.blockchainBlockNumber
+                                          }
+                                        </span>
+                                      </span>
+                                    )}
+
+                                  <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    Verified
+                                  </span>
+
+                                  <a
+                                    href={getTransactionUrl(
+                                      record.blockchainTransactionHash
+                                    )}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                                  >
+                                    Etherscan
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                </div>
+                              </div>
+
+                              {record.blockchainWallet && (
+                                <div className="mt-3 border-t border-gray-100 pt-3 dark:border-slate-800">
+                                  <p className="text-xs text-gray-500 dark:text-slate-400">
+                                    Recorded by wallet
+                                  </p>
+
+                                  <a
+                                    href={getAddressUrl(
+                                      record.blockchainWallet
+                                    )}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="mt-1 break-all font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+                                  >
+                                    {record.blockchainWallet}
+                                  </a>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          </>
+        )}
       </div>
     </main>
   );

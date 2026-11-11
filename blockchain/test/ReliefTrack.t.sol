@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+ // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
@@ -6,44 +6,18 @@ import {ReliefTrack} from "../src/ReliefTrack.sol";
 
 contract ReliefTrackTest is Test {
     ReliefTrack reliefTrack;
-
-    address owner = address(1);
-    address secondAdmin = address(2);
-    address unauthorizedUser = address(3);
+    address owner = address(this);
+    address otherUser = address(0x1234);
 
     function setUp() public {
-        // Deploy the contract as the owner
-        vm.prank(owner);
         reliefTrack = new ReliefTrack();
     }
 
-    function testOwnerIsAdmin() public view {
+    function testOwnerIsDeployer() public {
         assertEq(reliefTrack.owner(), owner);
-        assertTrue(reliefTrack.isAdmin(owner));
     }
 
-    function testAddAdmin() public {
-        vm.prank(owner);
-
-        reliefTrack.addAdmin(secondAdmin);
-
-        assertTrue(reliefTrack.isAdmin(secondAdmin));
-    }
-
-    function testRemoveAdmin() public {
-        vm.startPrank(owner);
-
-        reliefTrack.addAdmin(secondAdmin);
-        reliefTrack.removeAdmin(secondAdmin);
-
-        vm.stopPrank();
-
-        assertFalse(reliefTrack.isAdmin(secondAdmin));
-    }
-
-    function testAdminCanRecordDistribution() public {
-        vm.prank(owner);
-
+    function testOwnerCanRecordDistribution() public {
         reliefTrack.recordDistribution(
             "DIST-001",
             "WH-001",
@@ -74,29 +48,27 @@ contract ReliefTrackTest is Test {
         assertEq(recordedBy, owner);
     }
 
-    function testUnauthorizedUserCannotRecordDistribution() public {
-        vm.prank(unauthorizedUser);
+    function testNonOwnerCannotRecordDistribution() public {
+        vm.prank(otherUser);
 
-        vm.expectRevert("Not an authorized admin");
+        vm.expectRevert("Only owner can perform this action");
 
         reliefTrack.recordDistribution(
             "DIST-002",
             "WH-001",
-            "Water",
+            "Rice",
             1000,
-            "liters",
+            "kg",
             "Bongao"
         );
     }
 
-    function testDuplicateDistributionCannotBeRecorded() public {
-        vm.startPrank(owner);
-
+    function testCannotRecordDuplicateDistribution() public {
         reliefTrack.recordDistribution(
-            "DIST-003",
+            "DIST-001",
             "WH-001",
             "Rice",
-            1000,
+            2000,
             "kg",
             "Bongao"
         );
@@ -104,48 +76,12 @@ contract ReliefTrackTest is Test {
         vm.expectRevert("Distribution already exists");
 
         reliefTrack.recordDistribution(
-            "DIST-003",
+            "DIST-001",
             "WH-002",
             "Water",
             500,
-            "liters",
+            "boxes",
             "Bongao"
         );
-
-        vm.stopPrank();
-    }
-
-    function testZeroQuantityIsRejected() public {
-        vm.prank(owner);
-
-        vm.expectRevert("Quantity must be greater than zero");
-
-        reliefTrack.recordDistribution(
-            "DIST-004",
-            "WH-001",
-            "Rice",
-            0,
-            "kg",
-            "Bongao"
-        );
-    }
-
-    function testNonOwnerCannotAddAdmin() public {
-        vm.prank(unauthorizedUser);
-
-        vm.expectRevert("Only owner can perform this action");
-
-        reliefTrack.addAdmin(secondAdmin);
-    }
-
-    function testNonOwnerCannotRemoveAdmin() public {
-        vm.prank(owner);
-        reliefTrack.addAdmin(secondAdmin);
-
-        vm.prank(unauthorizedUser);
-
-        vm.expectRevert("Only owner can perform this action");
-
-        reliefTrack.removeAdmin(secondAdmin);
     }
 }

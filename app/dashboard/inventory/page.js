@@ -1,14 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  getData,
-  addInventoryItem,
-  changeInventoryQuantity,
-  removeInventoryItem,
-  subscribeToData,
-  getWarehouseUsedCapacity,
-} from "@/lib/relieftrack-store";
 
 const categories = [
   "Food",
@@ -45,34 +37,65 @@ export default function InventoryPage() {
   const [formData, setFormData] =
     useState(emptyForm);
 
-  function loadData() {
-    const data = getData();
+  async function loadData() {
+    try {
+      const [
+        inventoryResponse,
+        warehousesResponse,
+      ] = await Promise.all([
+        fetch("/api/inventory"),
+        fetch("/api/warehouses"),
+      ]);
 
-    setInventory(data.inventory || []);
-    setWarehouses(data.warehouses || []);
+      const inventoryData =
+        await inventoryResponse.json();
 
-    setFormData((current) => ({
-      ...current,
-      warehouseId:
-        current.warehouseId ||
-        String(data.warehouses?.[0]?.id || ""),
-    }));
+      const warehousesData =
+        await warehousesResponse.json();
+
+      if (inventoryData.success) {
+        setInventory(
+          inventoryData.inventory || []
+        );
+      }
+
+      if (warehousesData.success) {
+        const warehouseList =
+          warehousesData.warehouses || [];
+
+        setWarehouses(warehouseList);
+
+        setFormData((current) => ({
+          ...current,
+          warehouseId:
+            current.warehouseId ||
+            String(
+              warehouseList[0]?.id || ""
+            ),
+        }));
+      }
+    } catch (error) {
+      console.error(
+        "Failed to load inventory data:",
+        error
+      );
+
+      setMessage(
+        "Failed to load inventory data."
+      );
+      setMessageType("error");
+    }
   }
 
   useEffect(() => {
     loadData();
-
-    const unsubscribe =
-      subscribeToData(loadData);
-
-    return unsubscribe;
   }, []);
 
   const filteredInventory =
     useMemo(() => {
       return inventory.filter((item) => {
         const matchesSearch =
-          item.name
+          String(item.name || "")
             .toLowerCase()
             .includes(
               searchTerm.toLowerCase()
@@ -123,15 +146,6 @@ export default function InventoryPage() {
       0
     );
 
-  const lowStockItems =
-    inventory.filter(
-      (item) =>
-        Number(item.quantity || 0) >
-          0 &&
-        Number(item.quantity || 0) <=
-          100
-    ).length;
-
   const outOfStockItems =
     inventory.filter(
       (item) =>
@@ -151,50 +165,83 @@ export default function InventoryPage() {
     }));
   }
 
-  function handleAddItem(event) {
+  async function handleAddItem(event) {
     event.preventDefault();
 
     setMessage("");
 
-    const result =
-      addInventoryItem({
-        name: formData.name,
-        category:
-          formData.category,
-        quantity:
-          formData.quantity,
-        unit: formData.unit,
+    try {
+      const response = await fetch(
+        "/api/inventory",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            id: `INV-${Date.now()}`,
+            name: formData.name,
+            category:
+              formData.category,
+            quantity: Number(
+              formData.quantity
+            ),
+            unit: formData.unit,
+            warehouseId:
+              formData.warehouseId,
+            weightKgPerUnit: Number(
+              formData.weightKgPerUnit
+            ),
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (
+        !response.ok ||
+        !data.success
+      ) {
+        setMessage(
+          data.message ||
+            "Failed to add inventory item."
+        );
+        setMessageType("error");
+        return;
+      }
+
+      setMessage(
+        `${formData.name} has been added to inventory.`
+      );
+      setMessageType("success");
+
+      setFormData({
+        ...emptyForm,
         warehouseId:
-          formData.warehouseId,
-        weightKgPerUnit:
-          formData.weightKgPerUnit,
+          String(
+            warehouses[0]?.id || ""
+          ),
       });
 
-    if (!result.success) {
+      setShowForm(false);
+
+      await loadData();
+    } catch (error) {
+      console.error(
+        "Add inventory error:",
+        error
+      );
+
       setMessage(
-        result.message
+        "Failed to add inventory item."
       );
       setMessageType("error");
-      return;
     }
-
-    setMessage(
-      result.message
-    );
-    setMessageType("success");
-
-    setFormData({
-      ...emptyForm,
-      warehouseId:
-        String(
-          warehouses[0]?.id || ""
-        ),
-    });
-
-    setShowForm(false);
   }
 
-  function handleRemoveItem(id) {
+  async function handleRemoveItem(id) {
     const item =
       inventory.find(
         (entry) =>
@@ -211,42 +258,119 @@ export default function InventoryPage() {
 
     if (!confirmed) return;
 
-    const result =
-      removeInventoryItem(id);
+    try {
+      const response = await fetch(
+        `/api/inventory/${id}`,
+        {
+          method: "DELETE",
+        }
+      );
 
-    if (!result.success) {
+      const data =
+        await response.json();
+
+      if (
+        !response.ok ||
+        !data.success
+      ) {
+        setMessage(
+          data.message ||
+            "Failed to remove inventory item."
+        );
+        setMessageType("error");
+        return;
+      }
+
       setMessage(
-        result.message
+        `${item.name} has been removed from inventory.`
+      );
+      setMessageType("success");
+
+      await loadData();
+    } catch (error) {
+      console.error(
+        "Remove inventory error:",
+        error
+      );
+
+      setMessage(
+        "Failed to remove inventory item."
       );
       setMessageType("error");
-      return;
     }
-
-    setMessage(
-      `${item.name} has been removed from inventory.`
-    );
-    setMessageType("success");
   }
 
-  function handleQuantityChange(
+  async function handleQuantityChange(
     id,
     amount
   ) {
-    const result =
-      changeInventoryQuantity(
-        id,
-        amount
+    const item =
+      inventory.find(
+        (entry) =>
+          String(entry.id) ===
+          String(id)
       );
 
-    if (!result.success) {
+    if (!item) return;
+
+    const currentQuantity =
+      Number(item.quantity || 0);
+
+    const newQuantity =
+      currentQuantity + amount;
+
+    if (newQuantity < 0) {
       setMessage(
-        result.message
+        "Inventory quantity cannot be negative."
       );
       setMessageType("error");
       return;
     }
 
-    setMessage("");
+    try {
+      const response = await fetch(
+        `/api/inventory/${id}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            quantity: newQuantity,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (
+        !response.ok ||
+        !data.success
+      ) {
+        setMessage(
+          data.message ||
+            "Failed to update inventory quantity."
+        );
+        setMessageType("error");
+        return;
+      }
+
+      setMessage("");
+
+      await loadData();
+    } catch (error) {
+      console.error(
+        "Quantity update error:",
+        error
+      );
+
+      setMessage(
+        "Failed to update inventory quantity."
+      );
+      setMessageType("error");
+    }
   }
 
   function getWarehouseName(
@@ -255,8 +379,8 @@ export default function InventoryPage() {
     const warehouse =
       warehouses.find(
         (item) =>
-          Number(item.id) ===
-          Number(warehouseId)
+          String(item.id) ===
+          String(warehouseId)
       );
 
     return (
@@ -333,11 +457,10 @@ export default function InventoryPage() {
         </div>
 
         {/* Notice */}
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-          <strong>Prototype storage:</strong>{" "}
-          Inventory, warehouse, and distribution
-          data are currently saved in browser
-          localStorage. Capacity is calculated
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300">
+          <strong>Redis storage:</strong>{" "}
+          Inventory and warehouse data are
+          stored in Redis. Capacity is calculated
           using kilograms.
         </div>
 
@@ -377,7 +500,9 @@ export default function InventoryPage() {
                 <input
                   name="name"
                   value={formData.name}
-                  onChange={handleInputChange}
+                  onChange={
+                    handleInputChange
+                  }
                   placeholder="e.g. Rice"
                   required
                   className="form-input"

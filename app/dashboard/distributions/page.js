@@ -1,13 +1,6 @@
 "use client";
+
 import { useEffect, useState } from "react";
-import {
-  getData,
-  subscribeToData,
-  createDistribution,
-  updateDistributionStatus,
-  getWarehouseUsedCapacity,
-  saveData,
-} from "@/lib/relieftrack-store";
 
 import {
   recordDistributionOnBlockchain,
@@ -32,8 +25,19 @@ export default function DistributionsPage() {
   const [messageType, setMessageType] =
     useState("success");
 
-  const [recordingBlockchainId, setRecordingBlockchainId] =
-  useState(null);
+  const [
+    recordingBlockchainId,
+    setRecordingBlockchainId,
+  ] = useState(null);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [submitting, setSubmitting] =
+    useState(false);
+
+  const [updatingStatusId, setUpdatingStatusId] =
+    useState(null);
 
   const [form, setForm] = useState({
     warehouseId: "",
@@ -46,53 +50,131 @@ export default function DistributionsPage() {
     ),
   });
 
-  function loadData() {
-    const data = getData();
+  // ============================================================
+  // LOAD DATA FROM REDIS APIs
+  // ============================================================
 
-    setInventory(
-      data.inventory || []
-    );
+  async function loadData() {
+    try {
+      setLoading(true);
 
-    setWarehouses(
-      data.warehouses || []
-    );
+      const [
+        warehousesResponse,
+        inventoryResponse,
+        distributionsResponse,
+      ] = await Promise.all([
+        fetch("/api/warehouses"),
+        fetch("/api/inventory"),
+        fetch("/api/distributions"),
+      ]);
 
-    setDistributions(
-      data.distributions || []
-    );
+      const warehousesData =
+        await warehousesResponse.json();
 
-    setForm((current) => ({
-      ...current,
-      warehouseId:
-        current.warehouseId ||
-        String(
-          data.warehouses?.[0]?.id ||
-            ""
-        ),
-    }));
+      const inventoryData =
+        await inventoryResponse.json();
+
+      const distributionsData =
+        await distributionsResponse.json();
+
+      if (!warehousesData.success) {
+        throw new Error(
+          warehousesData.message ||
+            "Failed to load warehouses."
+        );
+      }
+
+      if (!inventoryData.success) {
+        throw new Error(
+          inventoryData.message ||
+            "Failed to load inventory."
+        );
+      }
+
+      if (!distributionsData.success) {
+        throw new Error(
+          distributionsData.message ||
+            "Failed to load distributions."
+        );
+      }
+
+      const loadedWarehouses =
+        warehousesData.warehouses || [];
+
+      setWarehouses(
+        loadedWarehouses
+      );
+
+      setInventory(
+        inventoryData.inventory || []
+      );
+
+      setDistributions(
+        distributionsData.distributions ||
+          []
+      );
+
+      // Keep the selected warehouse if it
+      // still exists. Otherwise select the first.
+      setForm((current) => {
+        const currentWarehouseExists =
+          loadedWarehouses.some(
+            (warehouse) =>
+              String(warehouse.id) ===
+              String(
+                current.warehouseId
+              )
+          );
+
+        return {
+          ...current,
+
+          warehouseId:
+            currentWarehouseExists
+              ? current.warehouseId
+              : String(
+                  loadedWarehouses[0]?.id ||
+                    ""
+                ),
+        };
+      });
+    } catch (error) {
+      console.error(
+        "Failed to load distribution data:",
+        error
+      );
+
+      setMessage(
+        error.message ||
+          "Failed to load distribution data."
+      );
+
+      setMessageType("error");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
     loadData();
-
-    const unsubscribe =
-      subscribeToData(loadData);
-
-    return unsubscribe;
   }, []);
+
+  // ============================================================
+  // SELECTED DATA
+  // ============================================================
 
   const selectedWarehouse =
     warehouses.find(
       (warehouse) =>
-        Number(warehouse.id) ===
-        Number(form.warehouseId)
+        String(warehouse.id) ===
+        String(form.warehouseId)
     );
 
   const warehouseInventory =
     inventory.filter(
       (item) =>
-        Number(item.warehouseId) ===
-        Number(form.warehouseId)
+        String(item.warehouseId) ===
+        String(form.warehouseId)
     );
 
   const selectedItem =
@@ -101,6 +183,10 @@ export default function DistributionsPage() {
         String(item.id) ===
         String(form.itemId)
     );
+
+  // ============================================================
+  // SUMMARY
+  // ============================================================
 
   const deliveredCount =
     distributions.filter(
@@ -123,17 +209,46 @@ export default function DistributionsPage() {
         "Pending"
     ).length;
 
+  // ============================================================
+  // WAREHOUSE CAPACITY
+  // ============================================================
+
   const selectedWarehouseUsed =
     selectedWarehouse
-      ? getWarehouseUsedCapacity(
-          selectedWarehouse.id,
-          {
-            inventory,
-            warehouses,
-            distributions,
-          }
-        )
+      ? inventory
+          .filter(
+            (item) =>
+              String(item.warehouseId) ===
+              String(
+                selectedWarehouse.id
+              )
+          )
+          .reduce(
+            (total, item) =>
+              total +
+              (Number(item.quantity) || 0) *
+                (Number(
+                  item.weightKgPerUnit
+                ) || 0),
+            0
+          )
       : 0;
+
+  const selectedWarehouseCapacity =
+    Number(
+      selectedWarehouse?.capacity || 0
+    );
+
+  const selectedWarehouseAvailable =
+    Math.max(
+      selectedWarehouseCapacity -
+        selectedWarehouseUsed,
+      0
+    );
+
+  // ============================================================
+  // FORM CHANGE
+  // ============================================================
 
   function handleChange(event) {
     const {
@@ -147,13 +262,16 @@ export default function DistributionsPage() {
         [name]: value,
       };
 
-      // When warehouse changes,
-      // reset the selected inventory item.
       if (
-        name ===
-        "warehouseId"
+        name === "warehouseId"
       ) {
         updated.itemId = "";
+        updated.quantity = "";
+      }
+
+      if (
+        name === "itemId"
+      ) {
         updated.quantity = "";
       }
 
@@ -161,7 +279,11 @@ export default function DistributionsPage() {
     });
   }
 
-  function handleSubmit(event) {
+  // ============================================================
+  // CREATE DISTRIBUTION
+  // ============================================================
+
+  async function handleSubmit(event) {
     event.preventDefault();
 
     setMessage("");
@@ -182,142 +304,264 @@ export default function DistributionsPage() {
       return;
     }
 
-    const result =
-      createDistribution({
-        warehouseId:
-          form.warehouseId,
-        itemId:
-          form.itemId,
-        quantity:
-          form.quantity,
-        destination:
-          form.destination,
-        recipient:
-          form.recipient,
-        date: form.date,
-      });
-
-    if (!result.success) {
+    if (
+      !form.quantity ||
+      Number(form.quantity) <= 0
+    ) {
       setMessage(
-        result.message
+        "Please enter a quantity greater than zero."
       );
       setMessageType("error");
       return;
     }
 
-    const updatedData =
-      getData();
+    try {
+      setSubmitting(true);
 
-    setInventory(
-      updatedData.inventory || []
-    );
+      const response = await fetch(
+        "/api/distributions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            warehouseId:
+              form.warehouseId,
 
-    setDistributions(
-      updatedData.distributions ||
-        []
-    );
+            itemId:
+              form.itemId,
 
-    setMessage(
-      `Distribution ${result.distribution.reference} created successfully. ${result.distribution.quantity.toLocaleString()} ${result.distribution.unit} of ${result.distribution.item} has been allocated from ${result.distribution.warehouseName}.`
-    );
+            quantity:
+              form.quantity,
 
-    setMessageType(
-      "success"
-    );
+            destination:
+              form.destination,
 
-    setForm({
-      warehouseId:
-        String(
-          warehouses[0]?.id || ""
+            recipient:
+              form.recipient,
+
+            date:
+              form.date,
+          }),
+        }
+      );
+
+      const result =
+        await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(
+          result.message ||
+            "Failed to create distribution."
+        );
+      }
+
+      const distribution =
+        result.distribution;
+
+      // Refresh Redis-backed data.
+      await loadData();
+
+      setMessage(
+        `Distribution ${distribution.reference} created successfully. ${Number(
+          distribution.quantity
+        ).toLocaleString()} ${
+          distribution.unit
+        } of ${
+          distribution.item
+        } has been allocated from ${
+          distribution.warehouseName
+        }.`
+      );
+
+      setMessageType("success");
+
+      setForm({
+        warehouseId:
+          String(
+            form.warehouseId ||
+              warehouses[0]?.id ||
+              ""
+          ),
+
+        destination: "",
+        recipient: "",
+        itemId: "",
+        quantity: "",
+
+        date: new Date().toLocaleDateString(
+          "en-CA"
         ),
-      destination: "",
-      recipient: "",
-      itemId: "",
-      quantity: "",
-      date: new Date().toLocaleDateString(
-        "en-CA"
-      ),
-    });
+      });
 
-    setShowForm(false);
+      setShowForm(false);
+    } catch (error) {
+      console.error(
+        "Create distribution failed:",
+        error
+      );
+
+      setMessage(
+        error.message ||
+          "Failed to create distribution."
+      );
+
+      setMessageType("error");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
-  function handleStatusChange(
+  // ============================================================
+  // UPDATE STATUS
+  // ============================================================
+
+  async function handleStatusChange(
     distributionId,
     newStatus
   ) {
-    const result =
-      updateDistributionStatus(
-        distributionId,
-        newStatus
+    try {
+      setUpdatingStatusId(
+        distributionId
       );
 
-    if (!result.success) {
-      setMessage(
-        result.message
+      setMessage("");
+
+      const response = await fetch(
+        `/api/distributions/${encodeURIComponent(
+          distributionId
+        )}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            status: newStatus,
+          }),
+        }
       );
+
+      const result =
+        await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(
+          result.message ||
+            "Failed to update distribution status."
+        );
+      }
+
+      setDistributions(
+        (previous) =>
+          previous.map(
+            (distribution) =>
+              String(
+                distribution.id
+              ) ===
+              String(
+                distributionId
+              )
+                ? result.distribution
+                : distribution
+          )
+      );
+
+      setMessage(
+        "Distribution status updated successfully."
+      );
+
+      setMessageType("success");
+    } catch (error) {
+      console.error(
+        "Status update failed:",
+        error
+      );
+
+      setMessage(
+        error.message ||
+          "Failed to update distribution status."
+      );
+
+      setMessageType("error");
+
+      // Reload in case the UI became
+      // out of sync with Redis.
+      await loadData();
+    } finally {
+      setUpdatingStatusId(null);
+    }
+  }
+
+  // ============================================================
+  // RECORD DISTRIBUTION ON BLOCKCHAIN
+  // ============================================================
+
+  async function handleRecordOnBlockchain(
+    distribution
+  ) {
+    setMessage("");
+
+    if (
+      distribution.status !==
+      "Delivered"
+    ) {
+      setMessage(
+        "Only delivered distributions can be recorded on the blockchain."
+      );
+
       setMessageType("error");
       return;
     }
 
-    setMessage(
-      "Distribution status updated successfully."
-    );
-
-    setMessageType(
-      "success"
-    );
-  }
-  async function handleRecordOnBlockchain(distribution) {
-  setMessage("");
-
-  if (distribution.status !== "Delivered") {
-    setMessage(
-      "Only delivered distributions can be recorded on the blockchain."
-    );
-    setMessageType("error");
-    return;
-  }
-
-  if (distribution.blockchainVerified) {
-    setMessage(
-      "This distribution has already been recorded on the blockchain."
-    );
-    setMessageType("error");
-    return;
-  }
-
-  try {
-    setRecordingBlockchainId(
-      distribution.id
-    );
-
-    setMessage(
-      "Preparing blockchain transaction..."
-    );
-    setMessageType("success");
-
-    const result =
-      await recordDistributionOnBlockchain(
-        distribution
+    if (
+      distribution.blockchainVerified
+    ) {
+      setMessage(
+        "This distribution has already been recorded on the blockchain."
       );
 
-    const data = getData();
+      setMessageType("error");
+      return;
+    }
 
-    const updatedDistributions =
-      data.distributions.map(
-        (item) => {
-          if (
-            Number(item.id) !==
-            Number(distribution.id)
-          ) {
-            return item;
-          }
+    try {
+      setRecordingBlockchainId(
+        distribution.id
+      );
 
-          return {
-            ...item,
+      setMessage(
+        "Preparing blockchain transaction..."
+      );
 
-            blockchainVerified: true,
+      setMessageType("success");
+
+      // MetaMask / Sepolia transaction.
+      const result =
+        await recordDistributionOnBlockchain(
+          distribution
+        );
+
+      // Save blockchain information
+      // back to Redis.
+      const response = await fetch(
+        `/api/distributions/${encodeURIComponent(
+          distribution.id
+        )}`,
+        {
+          method: "PUT",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            blockchainVerified:
+              true,
 
             blockchainTransactionHash:
               result.transactionHash,
@@ -330,39 +574,64 @@ export default function DistributionsPage() {
 
             blockchainRecordedAt:
               new Date().toISOString(),
-          };
+          }),
         }
       );
 
-    saveData({
-      ...data,
-      distributions:
-        updatedDistributions,
-    });
+      const updated =
+        await response.json();
 
-    setMessage(
-      `Distribution ${distribution.reference} was successfully recorded on the blockchain.`
-    );
+      if (
+        !response.ok ||
+        !updated.success
+      ) {
+        throw new Error(
+          updated.message ||
+            "Blockchain transaction succeeded, but the distribution record could not be updated."
+        );
+      }
 
-    setMessageType("success");
-  } catch (error) {
-    console.error(
-      "Blockchain recording failed:",
-      error
-    );
+      setDistributions(
+        (previous) =>
+          previous.map(
+            (item) =>
+              String(item.id) ===
+              String(distribution.id)
+                ? updated.distribution
+                : item
+          )
+      );
 
-    setMessage(
-      error?.reason ||
-        error?.shortMessage ||
-        error?.message ||
-        "Unable to record the distribution on the blockchain."
-    );
+      setMessage(
+        `Distribution ${distribution.reference} was successfully recorded on the blockchain.`
+      );
 
-    setMessageType("error");
-  } finally {
-    setRecordingBlockchainId(null);
+      setMessageType("success");
+    } catch (error) {
+      console.error(
+        "Blockchain recording failed:",
+        error
+      );
+
+      setMessage(
+        error?.reason ||
+          error?.shortMessage ||
+          error?.message ||
+          "Unable to record the distribution on the blockchain."
+      );
+
+      setMessageType("error");
+    } finally {
+      setRecordingBlockchainId(
+        null
+      );
+    }
   }
-}
+
+  // ============================================================
+  // RENDER
+  // ============================================================
+
   return (
     <main className="min-h-screen bg-slate-50 p-4 transition-colors dark:bg-slate-950 sm:p-6 lg:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -391,6 +660,7 @@ export default function DistributionsPage() {
               setShowForm(
                 (previous) => !previous
               );
+
               setMessage("");
             }}
             className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white shadow-sm transition hover:bg-blue-700"
@@ -402,13 +672,12 @@ export default function DistributionsPage() {
         </div>
 
         {/* Notice */}
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-          <strong>Prototype storage:</strong>{" "}
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300">
+          <strong>Current storage:</strong>{" "}
           Distribution records and inventory
-          changes are currently saved in browser
-          localStorage. MongoDB and blockchain
-          integration are planned for the next
-          development phase.
+          changes are stored in Redis. Delivered
+          distributions can be recorded on the
+          Sepolia blockchain through MetaMask.
         </div>
 
         {/* Message */}
@@ -457,8 +726,15 @@ export default function DistributionsPage() {
           />
         </section>
 
+        {/* Loading */}
+        {loading && (
+          <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+            Loading distribution data...
+          </div>
+        )}
+
         {/* Create Form */}
-        {showForm && (
+        {showForm && !loading && (
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900 sm:p-6">
             <h2 className="mb-1 text-lg font-bold text-slate-900 dark:text-white">
               Create Distribution Record
@@ -532,10 +808,19 @@ export default function DistributionsPage() {
                           }
                         )}{" "}
                         /{" "}
-                        {Number(
-                          selectedWarehouse.capacity
-                        ).toLocaleString()}{" "}
+                        {selectedWarehouseCapacity.toLocaleString()}{" "}
                         kg currently stored
+                      </p>
+
+                      <p className="mt-1 text-slate-500 dark:text-slate-400">
+                        Available:{" "}
+                        {selectedWarehouseAvailable.toLocaleString(
+                          undefined,
+                          {
+                            maximumFractionDigits: 2,
+                          }
+                        )}{" "}
+                        kg
                       </p>
                     </div>
                   )}
@@ -641,6 +926,11 @@ export default function DistributionsPage() {
                     }
                     min="0.01"
                     step="any"
+                    max={
+                      selectedItem
+                        ? selectedItem.quantity
+                        : undefined
+                    }
                     placeholder="Enter quantity"
                     className="form-input"
                     required
@@ -704,9 +994,12 @@ export default function DistributionsPage() {
               <div className="flex flex-wrap gap-3">
                 <button
                   type="submit"
-                  className="rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white transition hover:bg-blue-700"
+                  disabled={submitting}
+                  className="rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Save Distribution
+                  {submitting
+                    ? "Saving..."
+                    : "Save Distribution"}
                 </button>
 
                 <button
@@ -726,228 +1019,246 @@ export default function DistributionsPage() {
         )}
 
         {/* Distribution Records */}
-        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
-          <div className="border-b border-slate-200 p-5 dark:border-slate-700">
-            <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-              Distribution Records
-            </h2>
+        {!loading && (
+          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
+            <div className="border-b border-slate-200 p-5 dark:border-slate-700">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+                Distribution Records
+              </h2>
 
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Each record shows the warehouse
-              from which the relief goods were
-              distributed.
-            </p>
-          </div>
-
-          {distributions.length ===
-          0 ? (
-            <div className="p-10 text-center">
-              <p className="font-medium text-slate-700 dark:text-slate-200">
-                No distribution records yet.
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Each record shows the warehouse
+                from which the relief goods were
+                distributed.
               </p>
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1150px] text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                  <tr>
-                    <th className="px-5 py-4">
-                      Reference
-                    </th>
 
-                    <th className="px-5 py-4">
-                      Source Warehouse
-                    </th>
+            {distributions.length ===
+            0 ? (
+              <div className="p-10 text-center">
+                <p className="font-medium text-slate-700 dark:text-slate-200">
+                  No distribution records yet.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1150px] text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                    <tr>
+                      <th className="px-5 py-4">
+                        Reference
+                      </th>
 
-                    <th className="px-5 py-4">
-                      Destination
-                    </th>
+                      <th className="px-5 py-4">
+                        Source Warehouse
+                      </th>
 
-                    <th className="px-5 py-4">
-                      Relief Goods
-                    </th>
+                      <th className="px-5 py-4">
+                        Destination
+                      </th>
 
-                    <th className="px-5 py-4">
-                      Quantity
-                    </th>
+                      <th className="px-5 py-4">
+                        Relief Goods
+                      </th>
 
-                    <th className="px-5 py-4">
-                      Date
-                    </th>
+                      <th className="px-5 py-4">
+                        Quantity
+                      </th>
 
-                    <th className="px-5 py-4">
-                      Status
-                    </th>
+                      <th className="px-5 py-4">
+                        Date
+                      </th>
 
-                    <th className="px-5 py-4">
-                      Update
-                    </th>
+                      <th className="px-5 py-4">
+                        Status
+                      </th>
 
-                    <th className="px-5 py-4">
-                      Blockchain
-                    </th>
-                  </tr>
-                </thead>
+                      <th className="px-5 py-4">
+                        Update
+                      </th>
 
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {distributions.map(
-                    (
-                      distribution
-                    ) => (
-                      <tr
-                        key={
-                          distribution.id
-                        }
-                        className="hover:bg-slate-50 dark:hover:bg-slate-800/60"
-                      >
-                        <td className="whitespace-nowrap px-5 py-4 font-semibold text-blue-700 dark:text-blue-400">
-                          {
-                            distribution.reference
-                          }
-                        </td>
+                      <th className="px-5 py-4">
+                        Blockchain
+                      </th>
+                    </tr>
+                  </thead>
 
-                        <td className="px-5 py-4">
-                          <p className="font-medium text-slate-800 dark:text-slate-100">
-                            {
-                              distribution.warehouseName ||
-                              "Unknown"
-                            }
-                          </p>
-                        </td>
-
-                        <td className="px-5 py-4">
-                          <p className="font-medium text-slate-800 dark:text-slate-100">
-                            {
-                              distribution.destination
-                            }
-                          </p>
-
-                          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                            {
-                              distribution.recipient
-                            }
-                          </p>
-                        </td>
-
-                        <td className="whitespace-nowrap px-5 py-4 text-slate-700 dark:text-slate-300">
-                          {
-                            distribution.item
-                          }
-                        </td>
-
-                        <td className="whitespace-nowrap px-5 py-4">
-                          <p className="font-semibold text-slate-800 dark:text-slate-100">
-                            {Number(
-                              distribution.quantity
-                            ).toLocaleString()}{" "}
-                            {
-                              distribution.unit
-                            }
-                          </p>
-
-                          <p className="text-xs text-slate-500 dark:text-slate-400">
-                            {Number(
-                              distribution.weightKg ||
-                                0
-                            ).toLocaleString(
-                              undefined,
-                              {
-                                maximumFractionDigits: 2,
-                              }
-                            )}{" "}
-                            kg
-                          </p>
-                        </td>
-
-                        <td className="whitespace-nowrap px-5 py-4 text-slate-600 dark:text-slate-300">
-                          {
-                            distribution.date
-                          }
-                        </td>
-
-                        <td className="whitespace-nowrap px-5 py-4">
-                          <StatusBadge
-                            status={
-                              distribution.status
-                            }
-                          />
-                        </td>
-
-                        <td className="px-5 py-4">
-                          <select
-                            value={
-                              distribution.status
-                            }
-                            onChange={(
-                              event
-                            ) =>
-                              handleStatusChange(
-                                distribution.id,
-                                event
-                                  .target
-                                  .value
-                              )
-                            }
-                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
-                            aria-label={`Update status for ${distribution.reference}`}
-                          >
-                            <option value="Pending">
-                              Pending
-                            </option>
-
-                            <option value="In Transit">
-                              In Transit
-                            </option>
-
-                            <option value="Delivered">
-                              Delivered
-                            </option>
-                          </select>
-                        </td>
-                        <td className="px-5 py-4">
-                        {distribution.blockchainVerified ? (
-                          <div className="space-y-1">
-                            <span className="inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-                              ✓ Verified
-                            </span>
-
-                            <p className="max-w-[180px] break-all font-mono text-[10px] text-slate-500 dark:text-slate-400">
-                              {distribution.blockchainTransactionHash}
-                            </p>
-                          </div>
-                        ) : distribution.status === "Delivered" ? (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleRecordOnBlockchain(
-                                distribution
-                              )
-                            }
-                            disabled={
-                              recordingBlockchainId ===
-                              distribution.id
-                            }
-                            className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {recordingBlockchainId ===
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {distributions.map(
+                      (
+                        distribution
+                      ) => (
+                        <tr
+                          key={
                             distribution.id
-                              ? "Waiting for MetaMask..."
-                              : "Record on Blockchain"}
-                          </button>
-                        ) : (
-                          <span className="text-xs text-slate-400">
-                            Available after delivery
-                          </span>
-                        )}
-                      </td>
-                                            </tr>
-                    )
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+                          }
+                          className="hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                        >
+                          <td className="whitespace-nowrap px-5 py-4 font-semibold text-blue-700 dark:text-blue-400">
+                            {
+                              distribution.reference
+                            }
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <p className="font-medium text-slate-800 dark:text-slate-100">
+                              {
+                                distribution.warehouseName ||
+                                "Unknown"
+                              }
+                            </p>
+
+                            {distribution.warehouseLocation && (
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                {
+                                  distribution.warehouseLocation
+                                }
+                              </p>
+                            )}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <p className="font-medium text-slate-800 dark:text-slate-100">
+                              {
+                                distribution.destination
+                              }
+                            </p>
+
+                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                              {
+                                distribution.recipient
+                              }
+                            </p>
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4 text-slate-700 dark:text-slate-300">
+                            {
+                              distribution.item
+                            }
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            <p className="font-semibold text-slate-800 dark:text-slate-100">
+                              {Number(
+                                distribution.quantity
+                              ).toLocaleString()}{" "}
+                              {
+                                distribution.unit
+                              }
+                            </p>
+
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                              {Number(
+                                distribution.weightKg ||
+                                  0
+                              ).toLocaleString(
+                                undefined,
+                                {
+                                  maximumFractionDigits: 2,
+                                }
+                              )}{" "}
+                              kg
+                            </p>
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4 text-slate-600 dark:text-slate-300">
+                            {
+                              distribution.date
+                            }
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            <StatusBadge
+                              status={
+                                distribution.status
+                              }
+                            />
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <select
+                              value={
+                                distribution.status
+                              }
+                              onChange={(
+                                event
+                              ) =>
+                                handleStatusChange(
+                                  distribution.id,
+                                  event
+                                    .target
+                                    .value
+                                )
+                              }
+                              disabled={
+                                updatingStatusId ===
+                                distribution.id
+                              }
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                              aria-label={`Update status for ${distribution.reference}`}
+                            >
+                              <option value="Pending">
+                                Pending
+                              </option>
+
+                              <option value="In Transit">
+                                In Transit
+                              </option>
+
+                              <option value="Delivered">
+                                Delivered
+                              </option>
+                            </select>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {distribution.blockchainVerified ? (
+                              <div className="space-y-1">
+                                <span className="inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+                                  ✓ Verified
+                                </span>
+
+                                <p className="max-w-[180px] break-all font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                                  {
+                                    distribution.blockchainTransactionHash
+                                  }
+                                </p>
+                              </div>
+                            ) : distribution.status ===
+                              "Delivered" ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRecordOnBlockchain(
+                                    distribution
+                                  )
+                                }
+                                disabled={
+                                  recordingBlockchainId ===
+                                  distribution.id
+                                }
+                                className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {recordingBlockchainId ===
+                                distribution.id
+                                  ? "Waiting for MetaMask..."
+                                  : "Record on Blockchain"}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-400">
+                                Available after delivery
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       <style jsx>{`

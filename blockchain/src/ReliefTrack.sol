@@ -2,11 +2,9 @@
 pragma solidity ^0.8.20;
 
 contract ReliefTrack {
-    // The wallet that deployed the contract
+    // The wallet that deployed the contract.
+    // This is the only administrator.
     address public owner;
-
-    // Authorized ReliefTrack administrators
-    mapping(address => bool) public admins;
 
     struct Distribution {
         string distributionId;
@@ -21,10 +19,6 @@ contract ReliefTrack {
 
     // Distribution ID => Distribution record
     mapping(string => Distribution) private distributions;
-
-    // Events allow the frontend to detect blockchain activity
-    event AdminAdded(address indexed admin);
-    event AdminRemoved(address indexed admin);
 
     event DistributionRecorded(
         string indexed distributionId,
@@ -42,35 +36,8 @@ contract ReliefTrack {
         _;
     }
 
-    modifier onlyAdmin() {
-        require(admins[msg.sender], "Not an authorized admin");
-        _;
-    }
-
     constructor() {
         owner = msg.sender;
-        admins[msg.sender] = true;
-
-        emit AdminAdded(msg.sender);
-    }
-
-    function addAdmin(address admin) external onlyOwner {
-        require(admin != address(0), "Invalid admin address");
-        require(!admins[admin], "Already an admin");
-
-        admins[admin] = true;
-
-        emit AdminAdded(admin);
-    }
-
-    function removeAdmin(address admin) external onlyOwner {
-        require(admin != owner, "Owner cannot be removed");
-
-        require(admins[admin], "Not an admin");
-
-        admins[admin] = false;
-
-        emit AdminRemoved(admin);
     }
 
     function recordDistribution(
@@ -80,7 +47,7 @@ contract ReliefTrack {
         uint256 quantity,
         string calldata unit,
         string calldata destination
-    ) external onlyAdmin {
+    ) external onlyOwner {
         require(bytes(distributionId).length > 0, "Distribution ID required");
         require(bytes(warehouseId).length > 0, "Warehouse ID required");
         require(bytes(item).length > 0, "Item required");
@@ -149,9 +116,5 @@ contract ReliefTrack {
             distribution.timestamp,
             distribution.recordedBy
         );
-    }
-
-    function isAdmin(address account) external view returns (bool) {
-        return admins[account];
     }
 }
